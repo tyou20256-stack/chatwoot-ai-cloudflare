@@ -1,0 +1,56 @@
+[env]
+
+[env.production]
+name = "chatwoot-ai-gateway"
+main = "src/index.js"
+compatibility_date = "2024-03-08"
+compatibility_flags = ["nodejs_compat"]
+
+[[env.production.kv_namespaces]]
+binding = "FAQ_STORAGE"
+id = "a2fb4ab11c6d480f897e310b10b78d0d"
+
+[[env.production.d1_databases]]
+binding = "chatwoot_database"
+database_name = "chatwoot-database"
+database_id = "fa4ab2dc-6180-4c5d-bb0d-45e3bc05cee0"
+
+# Workers AI binding
+[env.production.ai]
+binding = "AI"
+
+# R2未有効化のため一時コメントアウト - Cloudflareダッシュボードで有効化後に戻す
+# [[env.production.r2_buckets]]
+# binding = "FILE_STORAGE"
+# bucket_name = "chatwoot-files"
+
+[env.production.vars]
+SYSTEM_VERSION = "7.0"
+# 以下は wrangler secret put で設定してください
+# CHATWOOT_BASE_URL = "https://your-chatwoot-instance.com"
+# CHATWOOT_API_TOKEN = "your_api_token"
+# LLM_API_KEY = "your_llm_api_key"
+# CHATWOOT_WEBHOOK_SECRET = "your_webhook_secret"
+# ENCRYPTION_KEY = "your_32_byte_encryption_key"
+
+[env.development]
+name = "chatwoot-ai-gateway-dev"
+main = "src/index.js"
+compatibility_date = "2024-03-08"
+
+[[env.development.kv_namespaces]]
+binding = "FAQ_STORAGE"
+id = "a2fb4ab11c6d480f897e310b10b78d0d"
+preview_id = "a2fb4ab11c6d480f897e310b10b78d0d"
+
+[[env.development.d1_databases]]
+binding = "chatwoot_database"
+database_name = "chatwoot-database"
+database_id = "fa4ab2dc-6180-4c5d-bb0d-45e3bc05cee0"
+
+[env.development.ai]
+binding = "AI"
+
+# [[env.development.r2_buckets]]
+# binding = "FILE_STORAGE"
+# bucket_name = "chatwoot-files"

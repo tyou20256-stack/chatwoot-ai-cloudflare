@@ -1,0 +1,32 @@
+{
+  "name": "chatwoot-ai-gateway-cloudflare",
+  "version": "2.0.0",
+  "description": "Chatwoot AI Gateway - Cloudflare Workers版。CS業務70%削減を実現するグローバルAIカスタマーサポートシステム。",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy --env production",
+    "deploy-dev": "wrangler deploy --env development",
+    "preview": "wrangler dev --env production",
+    "setup": "npm run setup:secrets",
+    "setup:secrets": "echo 'Run: wrangler secret put CHATWOOT_API_TOKEN && wrangler secret put CHATWOOT_WEBHOOK_SECRET && wrangler secret put LLM_API_KEY'"
+  },
+  "keywords": [
+    "chatwoot",
+    "ai",
+    "customer-support", 
+    "cloudflare-workers",
+    "webhook",
+    "multilingual",
+    "automation"
+  ],
+  "author": "TK AI Team",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/chatwoot-ai-gateway-cloudflare"
+  }
+}
