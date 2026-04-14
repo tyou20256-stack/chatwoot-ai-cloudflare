@@ -252,6 +252,65 @@ export default {
       // ξ-H2: alias for frontends expecting /api/staff-members/me
       if (path === '/api/staff-members/me' && method === 'GET') return handleStaffMe(request, env, corsHeaders);
 
+      // ---- Public widget endpoints (no auth — read-only, CORS-open) ----
+      if (path === '/api/public/jackpot' && method === 'GET') {
+        try {
+          const row = await env.DB.prepare(
+            `SELECT value FROM feature_flags WHERE key = 'jackpot_amount'`
+          ).first();
+          const row2 = await env.DB.prepare(
+            `SELECT value FROM feature_flags WHERE key = 'jackpot_updated_at'`
+          ).first();
+          const amount = row?.value ? Number(row.value) : 5000000;
+          const updatedAt = row2?.value || null;
+          return new Response(JSON.stringify({
+            amount: Number.isFinite(amount) ? amount : 5000000,
+            currency: 'JPY',
+            label: 'ドリームポット',
+            updated_at: updatedAt,
+          }), {
+            status: 200,
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'application/json; charset=utf-8',
+              'Cache-Control': 'public, max-age=30',
+            },
+          });
+        } catch (e) {
+          console.error('[jackpot] fetch failed:', e.message);
+          return new Response(JSON.stringify({ amount: 5000000, currency: 'JPY', label: 'ドリームポット', updated_at: null }), {
+            status: 200,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
+          });
+        }
+      }
+      if (path === '/api/widget-config/jackpot' && method === 'PUT') {
+        return withAuth(async (req, env, corsHeaders) => {
+          let body;
+          try { body = await req.json(); } catch { body = {}; }
+          const amount = Number(body.amount);
+          if (!Number.isFinite(amount) || amount < 0 || amount > 1e12) {
+            return new Response(JSON.stringify({ error: 'amount must be a positive number' }), {
+              status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
+            });
+          }
+          try {
+            await env.DB.batch([
+              env.DB.prepare(`INSERT OR REPLACE INTO feature_flags (key, value, updated_at) VALUES ('jackpot_amount', ?, datetime('now'))`).bind(String(Math.floor(amount))),
+              env.DB.prepare(`INSERT OR REPLACE INTO feature_flags (key, value, updated_at) VALUES ('jackpot_updated_at', datetime('now'), datetime('now'))`),
+            ]);
+            return new Response(JSON.stringify({ success: true, amount: Math.floor(amount) }), {
+              status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
+            });
+          } catch (e) {
+            console.error('[jackpot:set]', e.message);
+            return new Response(JSON.stringify({ error: 'Internal error' }), {
+              status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
+            });
+          }
+        })(request, env, corsHeaders);
+      }
+
       // ---- AI Chat ----
       if (path === '/api/ai/chat' && method === 'POST') {
         // AgentBot shared secret check (if configured)
