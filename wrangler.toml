@@ -1,56 +1,81 @@
-[env]
-
-[env.production]
 name = "chatwoot-ai-gateway"
-main = "src/index.js"
-compatibility_date = "2024-03-08"
-compatibility_flags = ["nodejs_compat"]
+main = "src/index.mjs"
+compatibility_date = "2024-03-01"
+workers_dev = true
 
-[[env.production.kv_namespaces]]
-binding = "FAQ_STORAGE"
-id = "a2fb4ab11c6d480f897e310b10b78d0d"
-
-[[env.production.d1_databases]]
-binding = "chatwoot_database"
-database_name = "chatwoot-database"
-database_id = "fa4ab2dc-6180-4c5d-bb0d-45e3bc05cee0"
-
-# Workers AI binding
-[env.production.ai]
+[ai]
 binding = "AI"
 
-# R2未有効化のため一時コメントアウト - Cloudflareダッシュボードで有効化後に戻す
-# [[env.production.r2_buckets]]
-# binding = "FILE_STORAGE"
-# bucket_name = "chatwoot-files"
+[vars]
+DEPOSIT_PAGE_URL = "https://sloten.io/deposit"
+PUBLIC_WORKER_URL = "https://chatwoot-ai-gateway.koni-tanaka.workers.dev"
 
-[env.production.vars]
-SYSTEM_VERSION = "7.0"
-# 以下は wrangler secret put で設定してください
-# CHATWOOT_BASE_URL = "https://your-chatwoot-instance.com"
-# CHATWOOT_API_TOKEN = "your_api_token"
-# LLM_API_KEY = "your_llm_api_key"
-# CHATWOOT_WEBHOOK_SECRET = "your_webhook_secret"
-# ENCRYPTION_KEY = "your_32_byte_encryption_key"
-
-[env.development]
-name = "chatwoot-ai-gateway-dev"
-main = "src/index.js"
-compatibility_date = "2024-03-08"
-
-[[env.development.kv_namespaces]]
-binding = "FAQ_STORAGE"
-id = "a2fb4ab11c6d480f897e310b10b78d0d"
-preview_id = "a2fb4ab11c6d480f897e310b10b78d0d"
-
-[[env.development.d1_databases]]
-binding = "chatwoot_database"
-database_name = "chatwoot-database"
+# ============================================
+# Production (default / top-level)
+# ============================================
+[[d1_databases]]
+binding = "DB"
+database_name = "chatwoot_rag_db"
 database_id = "fa4ab2dc-6180-4c5d-bb0d-45e3bc05cee0"
 
-[env.development.ai]
+[[kv_namespaces]]
+binding = "RATE_LIMITER"
+id = "54d595365c154644a376ac0c83ebb561"
+
+[[kv_namespaces]]
+binding = "STATE_KV"
+id = "2557f8891eff4340bcc4b812c78e4824"
+
+# R2 bucket for uploaded files. If binding is absent, files handler
+# falls back to a metadata-only stub (r2_key = 'stub://not-implemented').
+# [[r2_buckets]]
+# binding = "FILES_R2"
+# bucket_name = "sloten-files"
+# preview_bucket_name = "sloten-files-preview"
+
+# ============================================
+# Staging
+# ============================================
+[env.staging]
+name = "chatwoot-ai-gateway-staging"
+
+[env.staging.ai]
 binding = "AI"
 
-# [[env.development.r2_buckets]]
-# binding = "FILE_STORAGE"
-# bucket_name = "chatwoot-files"
+[env.staging.vars]
+DEPOSIT_PAGE_URL = "https://staging.sloten.io/deposit"
+PUBLIC_WORKER_URL = "https://chatwoot-ai-gateway-staging.workers.dev"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "chatwoot_rag_db_staging"
+database_id = "REPLACE_WITH_STAGING_D1_ID"
+
+[[env.staging.kv_namespaces]]
+binding = "RATE_LIMITER"
+id = "REPLACE_WITH_STAGING_KV_ID"
+
+[[env.staging.kv_namespaces]]
+binding = "STATE_KV"
+id = "REPLACE_WITH_STAGING_STATE_KV_ID"
+
+[[env.staging.r2_buckets]]
+# binding = "FILES_R2"
+bucket_name = "sloten-files-staging"
+
+# ============================================
+# Cron Triggers (retention)
+# ============================================
+[triggers]
+crons = ["0 3 * * *", "0 * * * *"]   # Daily 03:00 UTC retention purge + hourly heartbeat check (ι4)
+
+# ============================================
+# Build / rules
+# ============================================
+[build]
+command = ""
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = false

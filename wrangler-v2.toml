@@ -1,0 +1,35 @@
+name = "chatwoot-ai-gateway"
+main = "src/index.mjs"
+compatibility_date = "2024-03-01"
+
+[build]
+command = ""
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = false
+
+# Workers AI binding
+[ai]
+binding = "AI"
+
+# D1 Database for RAG knowledge sources
+[[d1_databases]]
+binding = "DB"
+database_name = "chatwoot_rag_db"
+database_id = "6d7d621c-8b4f-4211-9d97-848e05a5535c"
+
+# ============================================
+# ステージング環境（BKアカウント）
+# ============================================
+[env.staging]
+name = "chatwoot-ai-gateway-staging"
+
+[env.staging.ai]
+binding = "AI"
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "chatwoot_rag_db_staging"
+database_id = "5bd7a51f-6e52-454b-b7ad-2614ee314098"
