@@ -1,3 +1,4 @@
+-- @idempotent (Phase ρ: tking510 should drop ALTER lines if column already exists)
 -- Migration 009: Add keywords column to faq table (ξ-C3)
 --
 -- src/handlers/faq.mjs references `keywords` column for INSERT/UPDATE/decorate

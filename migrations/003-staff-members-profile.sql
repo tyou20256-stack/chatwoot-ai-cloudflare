@@ -1,3 +1,4 @@
+-- @idempotent (Phase ρ: tking510 should drop ALTER lines if column already exists)
 -- staff_members プロフィール項目拡張
 -- ALTER TABLE で段階的に追加（SQLite は DROP COLUMN 非対応なので追加のみ）
 

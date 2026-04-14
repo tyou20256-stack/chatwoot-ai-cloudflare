@@ -1,3 +1,4 @@
+-- @idempotent (Phase ρ: tking510 should drop ALTER lines if column already exists)
 -- Staff authentication columns
 ALTER TABLE staff_members ADD COLUMN password_hash TEXT;
 ALTER TABLE staff_members ADD COLUMN password_salt TEXT;
