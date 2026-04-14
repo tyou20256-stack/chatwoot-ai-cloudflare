@@ -1,4 +1,5 @@
 // 弊社側暫定実装 — tking510 納品版で置き換え予定
+import { detectInputThreat } from '../responseFilter.mjs';
 
 const json = (obj, status, corsHeaders) =>
   new Response(JSON.stringify(obj), {
@@ -37,6 +38,14 @@ export async function handleTemplatesPost(request, env, corsHeaders) {
     language = 'ja', shortcut = null, created_by = null,
   } = parsed.body;
   if (!name || !content) return err('name and content are required', 400, corsHeaders);
+  // ο: prompt-injection guard (templates feed into LLM context)
+  {
+    const threat = detectInputThreat(`${name} ${content}`);
+    if (threat?.suspicious) {
+      console.warn('[templates] injection in payload:', threat.category);
+      return err('Template content rejected: potential prompt injection detected', 400, corsHeaders);
+    }
+  }
   try {
     const result = await env.DB.prepare(
       `INSERT INTO templates (tenant_id, name, category, content, language, shortcut, usage_count, created_by, created_at, updated_at)
@@ -54,6 +63,17 @@ export async function handleTemplatesPost(request, env, corsHeaders) {
 export async function handleTemplatesPut(request, env, corsHeaders, id) {
   const parsed = await parseJson(request, corsHeaders);
   if (parsed.response) return parsed.response;
+  // ο: prompt-injection guard on update
+  {
+    const probe = `${parsed.body.name || ''} ${parsed.body.content || ''}`;
+    if (probe.trim()) {
+      const threat = detectInputThreat(probe);
+      if (threat?.suspicious) {
+        console.warn('[templates] injection in update:', threat.category);
+        return err('Template content rejected: potential prompt injection detected', 400, corsHeaders);
+      }
+    }
+  }
   try {
     const existing = await env.DB.prepare('SELECT * FROM templates WHERE id = ?').bind(id).first();
     if (!existing) return err('Template not found', 404, corsHeaders);

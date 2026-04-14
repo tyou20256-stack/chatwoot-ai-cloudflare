@@ -60,9 +60,11 @@ export const PROHIBITED_CATEGORIES = [
   {
     category: 'system_prompt_leak',
     patterns: [
-      /(?:システム|内部)(?:プロンプト|指示|設定)/i,
-      /(?:ignore|無視).{0,20}(?:instructions?|指示|previous)/i,
-      /(?:jailbreak|脱獄|DAN|developer\s*mode)/i,
+      // ρ-Mπ1 / τ-M: require extraction intent verb OR question form to avoid blocking
+      // legitimate tutorials, while still catching "システムプロンプトは何ですか？" forms.
+      /(?:システム|内部)(?:プロンプト|指示|設定).{0,15}(?:教え|見せ|出し|表示|reveal|show|tell|disclose|share|print|出力|公開|開示|何|なに|ですか|内容|について|を読|を見)/i,
+      /(?:ignore|無視|忘れ).{0,20}(?:instructions?|指示|previous|プロンプト|前の|これまで)/i,
+      /(?:jailbreak|脱獄|DAN|developer\s*mode|sudo\s*mode)/i,
     ],
     fallback: 'AIの内部設定に関するご質問にはお答えできません。サポートに関するご質問をどうぞ。',
   },
@@ -89,24 +91,137 @@ export function filterResponse(aiResponse) {
   return { safe: true, response: aiResponse };
 }
 
+// ============================================
+// C5: Prompt Injection Hardening
+// ============================================
+
+/**
+ * Unicode/encoding normalization for bypass-resistant injection detection.
+ * - Full-width ASCII → half-width
+ * - Common homoglyph / Cyrillic / Greek lookalikes → ASCII
+ * - Strip zero-width and bidi control characters
+ * - Lowercase + whitespace collapse
+ */
+export function normalizeForInjectionCheck(s) {
+  if (!s || typeof s !== 'string') return '';
+  let out = s;
+  // Full-width letters/digits → half-width
+  out = out.replace(/[Ａ-Ｚａ-ｚ０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  // Common Unicode lookalikes → ASCII
+  const lookalikes = {
+    'ｏ': 'o', 'Ｏ': 'O', 'ο': 'o', 'о': 'o', 'ρ': 'p', 'ι': 'i', 'ɩ': 'i',
+    'ѕ': 's', 'с': 'c', 'е': 'e', 'а': 'a', 'ⅰ': 'i', 'Ⅰ': 'I',
+  };
+  for (const [k, v] of Object.entries(lookalikes)) out = out.split(k).join(v);
+  // Lowercase
+  out = out.toLowerCase();
+  // Strip zero-width / bidi / BOM
+  out = out.replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g, '');
+  // Collapse whitespace
+  out = out.replace(/\s+/g, ' ').trim();
+  return out;
+}
+
+/**
+ * Heuristic: try to decode long base64 runs and detect injection keywords inside.
+ */
+export function looksLikeBase64Injection(s) {
+  if (!s || typeof s !== 'string') return false;
+  const matches = s.match(/[A-Za-z0-9+/=]{40,}/g) || [];
+  for (const m of matches) {
+    try {
+      const decoded = atob(m.replace(/[^A-Za-z0-9+/=]/g, ''));
+      if (decoded && /ignore|previous|system|prompt|override|instruction|reveal|forget|発言|無視|上書|ロール/i.test(decoded)) {
+        return true;
+      }
+    } catch (_) { /* not valid base64 */ }
+  }
+  return false;
+}
+
+/**
+ * Core prompt-injection regex set. Run against BOTH normalized and raw input.
+ */
+export const INJECTION_PATTERNS = [
+  // Original patterns
+  /(?:ignore|disregard|forget).{0,30}(?:instructions?|rules?|prompt)/i,
+  /(?:無視|忘れて|無効に).{0,20}(?:指示|ルール|プロンプト)/i,
+  /(?:you\s+are\s+now|act\s+as|あなたは今から)/i,
+  /(?:DAN|jailbreak|脱獄|developer\s+mode)/i,
+  // C5 expansion — jailbreak / persona / reveal-prompt phrases
+  /dan\s+mode|do\s+anything\s+now|developer\s+mode|jailbreak/i,
+  /前の?(?:指示|プロンプト)を?(?:無視|忘れ)/i,
+  /role\s*[:：]\s*(?:admin|system|root|developer)/i,
+  /ignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions?|prompts?|rules?)/i,
+  /reveal\s+(?:your\s+)?(?:system|initial|hidden|secret)\s+(?:prompt|instructions?)/i,
+  /you\s+are\s+now\s+(?:a|an|in)\b/i,
+  /from\s+now\s+on\s+you\s+(?:are|will|must)/i,
+  /tell\s+me\s+your\s+(?:system|instructions?|prompt)/i,
+  /新しいペルソナ|別のキャラクター|人格.*(?:変更|交代)/i,
+  /base64|rot13|encoded\s+(?:message|instruction)/i,
+  // Mixed-language: English verb + JP target (catches normalized full-width bypass)
+  /(?:ignore|disregard|forget|override).{0,10}(?:前の|以前の|上の)?\s*(?:指示|プロンプト|ルール)/i,
+  // Chinese
+  /忽略\s*(之前|以前|所有|先前)?\s*(的)?\s*(指令|提示|规则|指示)/,
+  /作为\s*(系统|管理员|开发者|超级用户)/,
+  /扮演\s*(角色|人物|身份)/,
+  /显示\s*(你的)?\s*(系统)?\s*(提示|指令)/,
+  /破解|越狱|绕过/,
+  // Korean
+  /이전\s*(의)?\s*(지시|명령|프롬프트|규칙)\s*(을|를)?\s*(무시|잊어)/,
+  /시스템\s*(관리자|루트|개발자)/,
+  /(너|당신)\s*(는|은)\s*이제/,
+];
+
+/**
+ * Heuristic: decode ROT13 of input and check for injection keywords.
+ */
+export function looksLikeRot13Injection(s) {
+  if (!s || typeof s !== 'string') return false;
+  const decoded = s.replace(/[a-zA-Z]/g, c => {
+    const base = c <= 'Z' ? 65 : 97;
+    return String.fromCharCode(((c.charCodeAt(0) - base + 13) % 26) + base);
+  });
+  return /ignore|previous|system|prompt|override|instruction|reveal|forget/i.test(decoded);
+}
+
+const DATA_EXTRACTION_PATTERNS = [
+  /(?:全ユーザー|全プレイヤー)(?:の|リスト|一覧|データ)/i,
+  /(?:データベース|DB|SQL)(?:の|を|から).{0,15}(?:取得|ダンプ)/i,
+];
+
 export function detectInputThreat(userInput) {
   if (!userInput) return { suspicious: false };
-  const threats = [
-    { category: 'prompt_injection', patterns: [
-      /(?:ignore|disregard|forget).{0,30}(?:instructions?|rules?|prompt)/i,
-      /(?:無視|忘れて|無効に).{0,20}(?:指示|ルール|プロンプト)/i,
-      /(?:you\s+are\s+now|act\s+as|あなたは今から)/i,
-      /(?:DAN|jailbreak|脱獄|developer\s+mode)/i,
-    ]},
-    { category: 'data_extraction', patterns: [
-      /(?:全ユーザー|全プレイヤー)(?:の|リスト|一覧|データ)/i,
-      /(?:データベース|DB|SQL)(?:の|を|から).{0,15}(?:取得|ダンプ)/i,
-    ]},
-  ];
-  for (const t of threats) {
-    for (const p of t.patterns) {
-      if (p.test(userInput)) return { suspicious: true, category: t.category };
-    }
+
+  const normalized = normalizeForInjectionCheck(userInput);
+
+  // 1. Run injection patterns against NORMALIZED text (catches full-width, homoglyph, case)
+  for (const p of INJECTION_PATTERNS) {
+    if (p.test(normalized)) return { suspicious: true, category: 'prompt_injection' };
   }
+
+  // 2. Also run against RAW input (preserves CJK signal normalization may alter)
+  for (const p of INJECTION_PATTERNS) {
+    if (p.test(userInput)) return { suspicious: true, category: 'prompt_injection' };
+  }
+
+  // 3. Base64 payload heuristic
+  if (looksLikeBase64Injection(userInput)) {
+    return { suspicious: true, category: 'prompt_injection_base64' };
+  }
+
+  // 3b. ROT13 payload heuristic
+  if (looksLikeRot13Injection(userInput)) {
+    return { suspicious: true, category: 'prompt_injection_rot13' };
+  }
+
+  // 4. Data-extraction patterns (raw is fine; CJK-heavy)
+  for (const p of DATA_EXTRACTION_PATTERNS) {
+    if (p.test(userInput)) return { suspicious: true, category: 'data_extraction' };
+  }
+
+  // TODO(C5): Layer-2 LLM judge for borderline inputs (suspicious keywords but no hard
+  // match). Deferred to keep the hot path synchronous and avoid extra Gemini calls.
+
   return { suspicious: false };
 }

@@ -1,3 +1,7 @@
+// TODO(kv-migration): Module-level state (campaignCache) is per-isolate.
+// Consider migrating to KV (see kv-cache.mjs) once async caller propagation
+// can be accommodated. Currently acceptable because this cache is per-tenant
+// and 5-min TTL limits staleness exposure.
 // ============================================
 // Sloten AI CS — キャンペーン管理 + FAQ自動連携
 // campaigns.mjs
@@ -42,8 +46,9 @@ function generateFAQQuestion(campaign) {
 function generateFAQAnswer(campaign) {
   let answer = `${campaign.title}は、${campaign.description}`;
 
+  // C3対策: ボーナスコード値は AgentBot 側のメニューで完結
   if (campaign.bonus_code) {
-    answer += `\nボーナスコード: 「${campaign.bonus_code}」`;
+    answer += `\n※ ボーナスコードは、チャットメニューの「ボーナスコード入力」からご選択ください。`;
   }
 
   if (campaign.conditions) {
@@ -234,8 +239,9 @@ export async function buildCampaignPromptInjection(env, tenantId = 'tenant_defau
 
     line += `: ${c.description}`;
 
+    // C3対策: bonus_code 値をプロンプトに含めない（AgentBot メニューへ誘導）
     if (c.bonus_code) {
-      line += ` ボーナスコード「${c.bonus_code}」`;
+      line += ` （ボーナスコードはメニューからご利用ください）`;
     }
 
     if (c.conditions) {
@@ -279,7 +285,7 @@ export async function handleCampaignsGet(request, env, corsHeaders) {
     campaigns: results || [],
     count: results?.length || 0,
   }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
@@ -306,7 +312,7 @@ export async function handleCampaignsPost(request, env, corsHeaders) {
       error: 'title と description は必須です',
     }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -342,7 +348,7 @@ export async function handleCampaignsPost(request, env, corsHeaders) {
     message: auto_faq ? 'キャンペーン登録完了（FAQ自動生成済み）' : 'キャンペーン登録完了',
   }), {
     status: 201,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
@@ -357,7 +363,7 @@ export async function handleCampaignsPut(request, env, corsHeaders, campaignId) 
   if (!existing) {
     return new Response(JSON.stringify({ success: false, error: 'キャンペーンが見つかりません' }), {
       status: 404,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -399,7 +405,7 @@ export async function handleCampaignsPut(request, env, corsHeaders, campaignId) 
     message: 'キャンペーン更新完了',
     campaign_id: campaignId,
   }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
@@ -411,7 +417,7 @@ export async function handleCampaignsDelete(request, env, corsHeaders, campaignI
   if (!existing) {
     return new Response(JSON.stringify({ success: false, error: 'キャンペーンが見つかりません' }), {
       status: 404,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -429,7 +435,7 @@ export async function handleCampaignsDelete(request, env, corsHeaders, campaignI
     message: 'キャンペーン削除完了（関連FAQ無効化済み）',
     campaign_id: campaignId,
   }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
@@ -447,7 +453,7 @@ export async function handleDeactivateExpired(request, env, corsHeaders) {
     ...result,
     message: `${result.deactivated}件のキャンペーンを無効化、${result.faqUpdated}件のFAQを更新`,
   }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
@@ -457,6 +463,6 @@ export async function handleDeactivateExpired(request, env, corsHeaders) {
 export async function handleCampaignCacheClear(request, env, corsHeaders) {
   clearCampaignCache();
   return new Response(JSON.stringify({ success: true, message: 'キャンペーンキャッシュクリア完了' }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }

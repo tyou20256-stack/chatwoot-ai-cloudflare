@@ -15,6 +15,33 @@ const KS_UPDATABLE = [
   'auto_refresh', 'content_hash', 'last_refreshed_at', 'is_active',
 ];
 
+// ο: SSRF guard reused from webhooks.mjs pattern.
+function validateUrl(u) {
+  if (!u) return { ok: true }; // url optional for non-URL knowledge entries
+  if (typeof u !== 'string') return { ok: false, error: 'URL must be string' };
+  let parsed;
+  try { parsed = new URL(u); } catch { return { ok: false, error: 'Invalid URL' }; }
+  if (parsed.protocol !== 'https:') return { ok: false, error: 'HTTPS required' };
+  const host = parsed.hostname.toLowerCase();
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') {
+    return { ok: false, error: 'Loopback URL not allowed' };
+  }
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (m) {
+    const [, a, b] = m.map(Number);
+    if (a === 10) return { ok: false, error: 'Private IP not allowed' };
+    if (a === 172 && b >= 16 && b <= 31) return { ok: false, error: 'Private IP not allowed' };
+    if (a === 192 && b === 168) return { ok: false, error: 'Private IP not allowed' };
+    if (a === 169 && b === 254) return { ok: false, error: 'Link-local IP not allowed' };
+    if (a === 100 && b >= 64 && b <= 127) return { ok: false, error: 'CGNAT IP not allowed' };
+    if (a === 127 || a === 0) return { ok: false, error: 'Loopback/invalid IP not allowed' };
+  }
+  if (host === 'metadata.google.internal' || host.endsWith('.internal')) {
+    return { ok: false, error: 'Internal hostname not allowed' };
+  }
+  return { ok: true };
+}
+
 export async function handleKnowledgeSourcesGet(request, env, corsHeaders) {
   try {
     const { results } = await env.DB.prepare(
@@ -50,6 +77,9 @@ export async function handleKnowledgeSourcesPost(request, env, corsHeaders) {
       priority = 5, category = null, auto_refresh = 0,
       content_hash = null, last_refreshed_at = null, is_active = 1,
     } = body || {};
+
+    const v = validateUrl(url);
+    if (!v.ok) return json({ success: false, error: v.error }, 400, corsHeaders);
 
     const result = await env.DB.prepare(
       `INSERT INTO knowledge_sources (tenant_id, url, title, source_type, priority, category,
@@ -87,6 +117,10 @@ export async function handleKnowledgeSourcesPut(request, env, corsHeaders, id) {
       return json({ success: true, id: Number(id), refreshed: true }, 200, corsHeaders);
     }
 
+    if ('url' in (body || {})) {
+      const v = validateUrl(body.url);
+      if (!v.ok) return json({ success: false, error: v.error }, 400, corsHeaders);
+    }
     const sets = [];
     const binds = [];
     for (const col of KS_UPDATABLE) {

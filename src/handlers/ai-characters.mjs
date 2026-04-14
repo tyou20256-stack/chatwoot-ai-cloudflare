@@ -1,4 +1,5 @@
 // ⚠️ 弊社側暫定実装 — tking510 納品版で置き換え予定
+import { detectInputThreat } from '../responseFilter.mjs';
 
 const json = (obj, status, corsHeaders) =>
   new Response(JSON.stringify(obj), {
@@ -71,6 +72,15 @@ export async function handleAiCharactersPost(request, env, corsHeaders) {
   if (parsed.response) return parsed.response;
   const body = parsed.body || {};
   if (!body.name) return err('name is required', 400, corsHeaders);
+  // ο: prompt-injection guard on fields rendered into LLM system prompt
+  {
+    const probe = `${body.name || ''} ${body.intro_message || ''} ${body.suffix || ''} ${body.system_prompt_override || ''}`;
+    const threat = detectInputThreat(probe);
+    if (threat?.suspicious) {
+      console.warn('[ai-characters] injection in payload:', threat.category);
+      return err('Character content rejected: potential prompt injection detected', 400, corsHeaders);
+    }
+  }
   const tenantId = body.tenant_id || 'tenant_default';
   try {
     const cols = ['tenant_id'];
@@ -99,6 +109,17 @@ export async function handleAiCharactersPut(request, env, corsHeaders, id) {
   const parsed = await parseJson(request, corsHeaders);
   if (parsed.response) return parsed.response;
   const body = parsed.body || {};
+  // ο: prompt-injection guard on update
+  {
+    const probe = `${body.name || ''} ${body.intro_message || ''} ${body.suffix || ''} ${body.system_prompt_override || ''}`;
+    if (probe.trim()) {
+      const threat = detectInputThreat(probe);
+      if (threat?.suspicious) {
+        console.warn('[ai-characters] injection in update:', threat.category);
+        return err('Character content rejected: potential prompt injection detected', 400, corsHeaders);
+      }
+    }
+  }
   try {
     const existing = await env.DB.prepare('SELECT id FROM ai_characters WHERE id = ?').bind(id).first();
     if (!existing) return err('AI character not found', 404, corsHeaders);

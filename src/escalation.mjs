@@ -123,10 +123,13 @@ async function generateEscalationSummary(env, reason, userMessage, conversationH
       .join('\n');
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'x-goog-api-key': env.GEMINI_API_KEY,
+        },
         body: JSON.stringify({
           system_instruction: {
             parts: [{
@@ -198,12 +201,9 @@ async function insertEscalation(env, { sessionId, reason, priority, userMessage,
       JSON.stringify(conversationHistory.slice(-20)), // 直近20メッセージを保存
     ).run();
 
-    // D1 の last_row_id を取得
-    const lastRow = await env.DB.prepare(
-      'SELECT id FROM escalation_queue WHERE session_id = ? ORDER BY id DESC LIMIT 1'
-    ).bind(sessionId).first();
-
-    return lastRow?.id || null;
+    // D1 の .run() が返す meta.last_row_id を使用（並行挿入でも安全）
+    const id = result?.meta?.last_row_id;
+    return typeof id === 'number' ? id : null;
 
   } catch (e) {
     console.error('[insertEscalation] D1エラー:', e.message);
@@ -309,7 +309,7 @@ ${escapeMarkdown(aiSummary?.slice(0, 500) || '(生成失敗)')}
       `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
         body: JSON.stringify({
           chat_id: env.TELEGRAM_ADMIN_CHAT_ID,
           text,
@@ -397,14 +397,14 @@ export async function handleGetEscalations(request, env, corsHeaders) {
       limit,
       offset,
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
 
   } catch (e) {
     console.error('[handleGetEscalations] D1エラー:', e.message);
-    return new Response(JSON.stringify({ error: e.message }), {
+    return new Response(JSON.stringify({ error: 'Internal error' }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 }
@@ -420,7 +420,7 @@ export async function handleUpdateEscalation(request, env, corsHeaders, escalati
   } catch (e) {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -431,7 +431,7 @@ export async function handleUpdateEscalation(request, env, corsHeaders, escalati
   if (status && !validStatuses.includes(status)) {
     return new Response(JSON.stringify({ error: `Invalid status. Must be: ${validStatuses.join(', ')}` }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -444,7 +444,7 @@ export async function handleUpdateEscalation(request, env, corsHeaders, escalati
     if (!existing) {
       return new Response(JSON.stringify({ error: 'Escalation not found' }), {
         status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
       });
     }
 
@@ -477,14 +477,14 @@ export async function handleUpdateEscalation(request, env, corsHeaders, escalati
       success: true,
       escalation: updated,
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
 
   } catch (e) {
     console.error('[handleUpdateEscalation] D1エラー:', e.message);
-    return new Response(JSON.stringify({ error: e.message }), {
+    return new Response(JSON.stringify({ error: 'Internal error' }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 }
@@ -553,14 +553,14 @@ export async function handleEscalationStats(request, env, corsHeaders) {
       today_by_reason: reasonBreakdown || [],
       avg_resolution_minutes: Math.round(avgResolution?.avg_minutes || 0),
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
 
   } catch (e) {
     console.error('[handleEscalationStats] D1エラー:', e.message);
-    return new Response(JSON.stringify({ error: e.message }), {
+    return new Response(JSON.stringify({ error: 'Internal error' }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 }

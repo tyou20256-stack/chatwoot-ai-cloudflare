@@ -69,17 +69,21 @@ export async function checkRateLimit(env, key, limit, windowSeconds, ctx) {
     current = parseInt(raw || '0', 10);
     if (!Number.isFinite(current) || current < 0) current = 0;
   } catch (e) {
-    console.error('[rate-limit] KV read failed, degrading open:', e.message);
+    console.error('[rate-limit] KV read failed:', e.message);
     if (ctx && typeof ctx.waitUntil === 'function') {
       ctx.waitUntil(alertKvFailure(env, e));
     } else {
       alertKvFailure(env, e).catch(() => {});
     }
+    // ρ-Hπ4: fail closed for sensitive endpoints (auth/login). Caller can opt out
+    // by setting env.RATE_LIMIT_FAIL_OPEN='true' (not recommended for prod).
+    const failOpen = env?.RATE_LIMIT_FAIL_OPEN === 'true';
     return {
-      allowed: true,
-      remaining: limit,
+      allowed: failOpen,
+      remaining: failOpen ? limit : 0,
       resetAt: (windowStart + windowSeconds) * 1000,
       limit,
+      degraded: true,
     };
   }
 
@@ -153,7 +157,7 @@ export function rateLimitResponse(check, corsHeaders) {
  * @returns {string}
  */
 export function getRateLimitKey(request, type) {
-  const ip = request.headers.get('X-Real-IP') || request.headers.get('CF-Connecting-IP') || 'unknown';
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   switch (type) {
     case 'ai':
       return `ai:${ip}`;

@@ -175,7 +175,7 @@ export async function resolveUserFromChat(env, userId, conversationId) {
 
   } catch (e) {
     console.error('[BQ-Chat] resolveUserFromChat エラー:', e.message);
-    return { authenticated: false, bqProfile: null, userName: null, error: e.message };
+    return { authenticated: false, bqProfile: null, userName: null, error: null };
   }
 }
 
@@ -253,7 +253,7 @@ export async function fetchUserBalance(env, userName) {
     };
   } catch (e) {
     console.error('[BQ-Chat] fetchUserBalance エラー:', e.message);
-    return { balance: null, currency: 'JPY', lastUpdated: null, error: e.message };
+    return { balance: null, currency: 'JPY', lastUpdated: null, error: null };
   }
 }
 
@@ -317,7 +317,7 @@ export async function fetchDepositStatus(env, userName, limit = 3) {
     };
   } catch (e) {
     console.error('[BQ-Chat] fetchDepositStatus エラー:', e.message);
-    return { deposits: [], error: e.message };
+    return { deposits: [], error: null };
   }
 }
 
@@ -385,7 +385,7 @@ export async function fetchWithdrawalStatus(env, userName, limit = 3) {
     };
   } catch (e) {
     console.error('[BQ-Chat] fetchWithdrawalStatus エラー:', e.message);
-    return { withdrawals: [], error: e.message };
+    return { withdrawals: [], error: null };
   }
 }
 
@@ -546,7 +546,7 @@ export async function enrichWithBQData(env, message, userId, conversationId) {
     stats.dataFetched = true;
   } catch (e) {
     console.error('[BQ-Chat] データ取得失敗:', e.message);
-    data = { error: e.message };
+    data = { error: null };
   }
 
   // Step 4: コンテキスト生成

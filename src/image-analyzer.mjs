@@ -13,6 +13,8 @@
 //   const result = await analyzeImage(env, imageBase64, mimeType, userQuestion);
 // ============================================
 
+import { maskPII } from './pii-masker.mjs';
+
 // ============================================
 // 1. 定数
 // ============================================
@@ -75,13 +77,17 @@ export function validateImageInput(imageBase64, mimeType) {
  * @param {string} dataUrl - "data:image/jpeg;base64,/9j/4AAQ..." 形式
  * @returns {{ base64: string, mimeType: string } | null}
  */
+const ALLOWED_IMAGE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
 export function parseDataUrl(dataUrl) {
   if (!dataUrl || typeof dataUrl !== 'string') return null;
 
-  // data:URL形式の場合
-  const match = dataUrl.match(/^data:(image\/\w+);base64,(.+)$/);
+  // data:URL形式の場合（SVG等の危険MIMEは拒否）
+  const match = dataUrl.match(/^data:(image\/[a-z+-]+);base64,(.+)$/i);
   if (match) {
-    return { mimeType: match[1], base64: match[2] };
+    const mime = match[1].toLowerCase();
+    if (!ALLOWED_IMAGE_MIME.has(mime)) return null;
+    return { mimeType: mime, base64: match[2] };
   }
 
   // プレーンBase64の場合（MIMEタイプ推定）
@@ -90,10 +96,56 @@ export function parseDataUrl(dataUrl) {
   if (/^R0lGOD/.test(dataUrl)) return { mimeType: 'image/gif', base64: dataUrl };
   if (/^UklGR/.test(dataUrl)) return { mimeType: 'image/webp', base64: dataUrl };
 
-  // 判別不能 → JPEGとして扱う
-  return { mimeType: 'image/jpeg', base64: dataUrl };
+  // 判別不能 → 拒否（従来はJPEGフォールバックだったが、非画像の紛れ込みを防ぐ）
+  return null;
 }
 
+
+// ============================================
+// 2.5 JPEG EXIF / metadata strip (prompt-injection mitigation)
+// ============================================
+
+/**
+ * Strip JPEG APP1 (EXIF), APP13 (Photoshop IPTC), APP14 segments
+ * to prevent prompt injection via image metadata.
+ * Non-JPEG inputs are returned unchanged.
+ */
+export function stripJpegExif(base64) {
+  if (typeof base64 !== 'string') return base64;
+  let bytes;
+  try {
+    bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  } catch {
+    return base64;
+  }
+  if (bytes.length < 4 || bytes[0] !== 0xFF || bytes[1] !== 0xD8) return base64;
+
+  const out = [0xFF, 0xD8];
+  let i = 2;
+  while (i < bytes.length) {
+    if (bytes[i] !== 0xFF) break;
+    const marker = bytes[i + 1];
+    if (marker === 0xDA) {
+      // Start of Scan — copy remainder verbatim
+      for (let j = i; j < bytes.length; j++) out.push(bytes[j]);
+      break;
+    }
+    if (i + 3 >= bytes.length) break;
+    const segLen = (bytes[i + 2] << 8) | bytes[i + 3];
+    if (segLen < 2 || i + 2 + segLen > bytes.length) break;
+    // Skip metadata-bearing APP segments: APP1(EXIF), APP13(IPTC), APP14(Adobe)
+    if (marker === 0xE1 || marker === 0xED || marker === 0xEE) {
+      i += 2 + segLen;
+      continue;
+    }
+    for (let j = 0; j < 2 + segLen; j++) out.push(bytes[i + j]);
+    i += 2 + segLen;
+  }
+  const u8 = Uint8Array.from(out);
+  let bin = '';
+  for (let k = 0; k < u8.length; k++) bin += String.fromCharCode(u8[k]);
+  return btoa(bin);
+}
 
 // ============================================
 // 3. Gemini Vision API呼び出し
@@ -147,14 +199,26 @@ export async function analyzeImage(env, imageBase64, mimeType, userQuestion = nu
     throw new Error('GEMINI_API_KEY未設定: 画像分析にはGemini APIキーが必要です');
   }
 
+  // Strip EXIF/metadata from JPEG before sending to the LLM (prompt-injection mitigation)
+  const mimeLower = (mimeType || '').toLowerCase();
+  if (mimeLower === 'image/jpeg' || mimeLower === 'image/jpg') {
+    try { imageBase64 = stripJpegExif(imageBase64); } catch (e) {
+      console.warn('[image-analyzer] stripJpegExif failed:', e.message);
+    }
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), GEMINI_VISION_TIMEOUT_MS);
 
   try {
     // ユーザー質問テキスト（デフォルト or ユーザー指定）
-    const questionText = userQuestion && userQuestion.trim().length > 0
+    // Defensive PII mask: applied to any text sent to the external LLM,
+    // even if the caller already masked. Image binary is not masked —
+    // the system prompt instructs the model not to mention PII in images.
+    const rawQuestion = userQuestion && userQuestion.trim().length > 0
       ? userQuestion.trim()
       : 'この画像の内容を確認して、何か問題やエラーがあれば対処法を教えてください。';
+    const questionText = maskPII(rawQuestion);
 
     // Gemini API リクエスト構築
     const contents = [];
@@ -164,7 +228,7 @@ export async function analyzeImage(env, imageBase64, mimeType, userQuestion = nu
     for (const msg of recentHistory) {
       contents.push({
         role: msg.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: msg.content }],
+        parts: [{ text: maskPII(msg.content) }],
       });
     }
 
@@ -194,18 +258,21 @@ export async function analyzeImage(env, imageBase64, mimeType, userQuestion = nu
         maxOutputTokens: 512,
       },
       safetySettings: [
-        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
-        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
-        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
-        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+        { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+        { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
       ],
     };
 
     const response = await fetch(
-      `${GEMINI_VISION_URL}?key=${env.GEMINI_API_KEY}`,
+      GEMINI_VISION_URL,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'x-goog-api-key': env.GEMINI_API_KEY,
+        },
         body: JSON.stringify(requestBody),
         signal: controller.signal,
       }
@@ -215,7 +282,8 @@ export async function analyzeImage(env, imageBase64, mimeType, userQuestion = nu
 
     if (!response.ok) {
       const errText = await response.text().catch(() => 'unknown');
-      throw new Error(`Gemini Vision API HTTP ${response.status}: ${errText.slice(0, 300)}`);
+      console.error('[image-analyzer] Gemini Vision error:', response.status, errText.slice(0, 300));
+      throw new Error(`Gemini Vision API HTTP ${response.status}`);
     }
 
     const data = await response.json();

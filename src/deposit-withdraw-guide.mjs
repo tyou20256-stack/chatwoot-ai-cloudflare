@@ -1,3 +1,7 @@
+// TODO(kv-migration): Module-level state (sessionStates Map) is per-isolate.
+// Consider migrating to KV (see kv-cache.mjs) once async caller propagation
+// can be accommodated. Currently acceptable because session state is short-
+// lived and per-user; worst case is a single guided flow reset.
 // ============================================
 // Sloten AI CS — 入金/出金インテリジェントガイド
 // deposit-withdraw-guide.mjs
@@ -398,6 +402,12 @@ export function clearSessionState(sessionId) {
  * @returns {{ reply: string, quickReplies: Array<{label: string, value: string}>, type: string, guideStep: string }|null}
  */
 export function handleDepositWithdrawFlow(userMessage, sessionId, options = {}) {
+  // GASフロー干渉防止: conversation.status='open' のときはAI応答を抑止
+  if (options.conversationStatus === 'open') {
+    console.log('[deposit-withdraw] skipped: conversation is open (GAS/human in progress)');
+    return null;
+  }
+
   const depositPageUrl = options.depositPageUrl || 'https://sloten.io/deposit';
   const currentState = getSessionState(sessionId);
 
@@ -590,6 +600,6 @@ export function buildGuideResponse(guideResult, corsHeaders, startTime) {
     model: 'deposit-withdraw-guide',
     responseTimeMs: Date.now() - startTime,
   }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }

@@ -14,9 +14,6 @@ const ALLOWED_ORIGINS = [
   'https://www.sloten.io',
   'https://sloten-ai-test.pages.dev',
   'https://sloten-admin-secure.pages.dev',
-  'https://sloten-admin.pages.dev',
-  'https://chat-admin.slotenpromotion.com',
-  'http://chat-admin.slotenpromotion.com',
 ];
 
 const ALLOWED_ORIGIN_PATTERNS = [

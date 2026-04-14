@@ -11,14 +11,21 @@
  * NOTE: tableName is interpolated but always a hardcoded literal — no SQL injection risk.
  */
 async function paginatedDelete(env, tableName, cutoffDays, batchSize = 1000, maxBatches = 20) {
+  // ρ-Cπ5: validate batchSize to prevent infinite loop with NaN/0/negative
+  if (!Number.isFinite(batchSize) || batchSize <= 0) batchSize = 1000;
+  if (!Number.isFinite(maxBatches) || maxBatches <= 0) maxBatches = 20;
+  if (!env?.DB) { console.error('[paginatedDelete] env.DB missing'); return 0; }
   let totalDeleted = 0;
   for (let i = 0; i < maxBatches; i++) {
     try {
+      // τ-H3: inline batchSize as integer literal — D1 has historically had issues
+      // with `LIMIT ?` bind. batchSize is already validated as a finite positive int.
+      const safeBatch = Math.max(1, Math.min(10000, Math.floor(batchSize)));
       const res = await env.DB.prepare(
         `DELETE FROM ${tableName} WHERE id IN (
-          SELECT id FROM ${tableName} WHERE created_at < datetime('now', '-${cutoffDays} days') LIMIT ?
+          SELECT id FROM ${tableName} WHERE created_at < datetime('now', '-${cutoffDays} days') LIMIT ${safeBatch}
         )`
-      ).bind(batchSize).run();
+      ).run();
       const changes = res.meta?.changes || 0;
       totalDeleted += changes;
       if (changes < batchSize) break;
@@ -36,12 +43,63 @@ async function paginatedDelete(env, tableName, cutoffDays, batchSize = 1000, max
  * - Heartbeat check runs every invocation (cheap; one SELECT).
  */
 export async function handleScheduled(event, env, ctx) {
+  // ρ-Cπ4: hard-fail loud if DB binding missing (else cron silent-success forever)
+  if (!env?.DB) {
+    console.error('[scheduled] env.DB binding missing — cron cannot run');
+    if (env?.TELEGRAM_BOT_TOKEN && env?.TELEGRAM_ALERT_CHAT_ID) {
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({
+          chat_id: env.TELEGRAM_ALERT_CHAT_ID,
+          text: '🚨 Sloten cron: env.DB binding missing — check wrangler.toml',
+        }),
+      }).catch(() => {});
+    }
+    return;
+  }
   const cron = event?.cron || '';
   const hourUtc = new Date().getUTCHours();
 
   // Daily retention purge — runs at 03:00 UTC
+  // ρ-Hπ7 / τ-H4: KV distributed lock with short TTL (90s) and immediate release on completion
+  // Trade-off: shorter TTL means stale-lock recovers fast (1.5 min), but a slow purge
+  // > 90s could let a 2nd cron in. Heartbeat hourly cron (which only checks state) won't
+  // contend; only the daily 03:00 + accidental hour=3 retry would race, so 90s is safe.
   if (cron === '0 3 * * *' || hourUtc === 3) {
-    await runDailyPurge(env, ctx);
+    let acquired = false;
+    let lockKey = 'lock:daily_purge';
+    let owner = null;
+    if (env.STATE_KV) {
+      try {
+        owner = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const existing = await env.STATE_KV.get(lockKey);
+        if (existing) {
+          console.log('[scheduled] daily_purge lock held by', existing, '— skip');
+        } else {
+          await env.STATE_KV.put(lockKey, owner, { expirationTtl: 90 });
+          const check = await env.STATE_KV.get(lockKey);
+          acquired = check === owner;
+        }
+      } catch (e) {
+        console.warn('[scheduled] lock check failed, proceeding:', e.message);
+        acquired = true;
+      }
+    } else {
+      acquired = true;
+    }
+    if (acquired) {
+      try { await runDailyPurge(env, ctx); }
+      finally {
+        // τ-H4: release lock immediately so next scheduled run isn't blocked by stale TTL
+        if (env.STATE_KV && owner) {
+          try {
+            const cur = await env.STATE_KV.get(lockKey);
+            if (cur === owner) await env.STATE_KV.delete(lockKey);
+          } catch (_) { /* TTL will eventually expire */ }
+        }
+      }
+    }
   }
   // Hourly heartbeat checker — runs every invocation
   await checkCronHeartbeat(env, ctx);

@@ -1,6 +1,7 @@
 // ⚠️ 弊社側暫定実装 — tking510 納品版で置き換え予定
 
 import { withEtag } from '../etag-helper.mjs';
+import { getPrincipal } from '../auth-helper.mjs';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8' };
 
@@ -67,10 +68,14 @@ export async function handleMessagesPost(request, env, corsHeaders) {
   }
 
   const sender_type = body.sender_type || 'agent';
-  // TODO: sender_id should come from IdP auth
+  // τ-Cτ1: derive from WeakMap-backed principal (Request is immutable in CF Workers)
+  const principalId = getPrincipal(request)?.staff_id ?? null;
   const senderIdFromHeader = request.headers.get('X-Staff-User-Id');
-  const sender_id = senderIdFromHeader ? parseInt(senderIdFromHeader, 10)
-    : (body.sender_id ? parseInt(body.sender_id, 10) : (console.warn('[sender_id] defaulted to 1 — TODO IdP'), 1));
+  const sender_id = principalId
+    ?? (senderIdFromHeader ? parseInt(senderIdFromHeader, 10) : (body.sender_id ? parseInt(body.sender_id, 10) : null));
+  if (!Number.isFinite(sender_id)) {
+    return json({ success: false, error: 'sender_id required (session principal or X-Staff-User-Id header)' }, 400, corsHeaders);
+  }
   let metadata = body.metadata ?? null;
   if (metadata && typeof metadata === 'object') {
     metadata = JSON.stringify(metadata);
@@ -87,10 +92,15 @@ export async function handleMessagesPost(request, env, corsHeaders) {
        VALUES (?, ?, ?, ?, ?)`
     ).bind(conversation_id, sender_id, sender_type, content, metadata).run();
 
+    const newId = result?.meta?.last_row_id;
+    if (!newId) {
+      console.error('handleMessagesPost: missing last_row_id from D1 result');
+      return json({ success: false, error: 'Insert succeeded but ID unavailable' }, 500, corsHeaders);
+    }
     const inserted = await env.DB.prepare(
       `SELECT id, conversation_id, sender_id, sender_type, content, metadata, created_at
        FROM messages WHERE id = ?`
-    ).bind(result.meta.last_row_id).first();
+    ).bind(newId).first();
 
     return json({ success: true, message: inserted }, 201, corsHeaders);
   } catch (e) {

@@ -11,7 +11,7 @@ async function _proxyCall(path, body) {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${BQ_PROXY_TOKEN}`,
-      'Content-Type': 'application/json',
+      'Content-Type': 'application/json; charset=utf-8',
     },
     body: JSON.stringify(body),
   });

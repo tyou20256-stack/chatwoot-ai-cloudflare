@@ -83,7 +83,7 @@ import {
         tracker: emotionContext.trackerSummary,
       },
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -159,7 +159,7 @@ import {
     },
     ...(emotionResult.emotion === 'angry' && { anger_detected: true }),
   }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 
 */
@@ -248,7 +248,7 @@ export async function handleAIChatV2_withEmotion(request, env, corsHeaders, bran
   } catch (e) {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -257,7 +257,7 @@ export async function handleAIChatV2_withEmotion(request, env, corsHeaders, bran
   if (!message || typeof message !== 'string' || message.trim().length === 0) {
     return new Response(JSON.stringify({ error: 'メッセージが空です' }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -315,7 +315,7 @@ export async function handleAIChatV2_withEmotion(request, env, corsHeaders, bran
         tracker: tracker.getSummary(),
       },
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -367,6 +367,6 @@ export async function handleAIChatV2_withEmotion(request, env, corsHeaders, bran
       consecutiveAngry: trackResult.consecutiveAngry,
     },
   }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }

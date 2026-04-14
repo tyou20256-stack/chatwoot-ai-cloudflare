@@ -59,7 +59,7 @@ async function _PATCH_rgDetection(cleanMessage, env, sessionId, conversationHist
       priority: escalation.priority,
       model: 'rg-detection',
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
   return null;
@@ -96,7 +96,7 @@ async function _PATCH_escalationDetection(cleanMessage, env, sessionId, conversa
       priority: escalation.priority,
       model: 'escalation-detection',
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
   return null;
@@ -141,7 +141,7 @@ async function _PATCH_angerEscalation(cleanMessage, conversationHistory, env, se
       priority: escalation.priority,
       model: 'anger-detection',
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -190,7 +190,7 @@ async function _PATCH_autoEscalationCheck(finalResponse, env, sessionId, cleanMe
       priority: escalation.priority,
       model: 'auto-escalation',
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 

@@ -1,3 +1,7 @@
+// TODO(kv-migration): Module-level state (abTestCache) is per-isolate.
+// Consider migrating to KV (see kv-cache.mjs) once async caller propagation
+// can be accommodated. Currently acceptable because this cache is per-tenant
+// and 5-min TTL limits staleness exposure.
 // ============================================================
 // Sloten AI CS — A/Bテスト自動最適化モジュール
 // src/ab-testing.mjs
@@ -308,11 +312,11 @@ export async function handleABTestsList(request, env, corsHeaders) {
     }
     
     return new Response(JSON.stringify({ success: true, ab_tests: enriched }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
     });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), {
-      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    return new Response(JSON.stringify({ success: false, error: 'Internal error' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 }
@@ -326,7 +330,7 @@ export async function handleABTestCreate(request, env, corsHeaders) {
     
     if (!test_name || !variant_a || !variant_b) {
       return new Response(JSON.stringify({ error: 'test_name, variant_a, variant_b は必須です' }), {
-        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
       });
     }
     
@@ -337,16 +341,16 @@ export async function handleABTestCreate(request, env, corsHeaders) {
     clearABTestCache();
     
     return new Response(JSON.stringify({ success: true, id: result.meta.last_row_id }), {
-      status: 201, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      status: 201, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
     });
   } catch (e) {
     if (e.message.includes('UNIQUE')) {
       return new Response(JSON.stringify({ error: 'このテスト名は既に存在します' }), {
-        status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        status: 409, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
       });
     }
-    return new Response(JSON.stringify({ error: e.message }), {
-      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    return new Response(JSON.stringify({ success: false, error: 'Internal error' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 }
@@ -370,7 +374,7 @@ export async function handleABTestUpdate(request, env, corsHeaders, testId) {
     
     if (updates.length === 0) {
       return new Response(JSON.stringify({ error: '更新フィールドが指定されていません' }), {
-        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
       });
     }
     
@@ -384,11 +388,11 @@ export async function handleABTestUpdate(request, env, corsHeaders, testId) {
     clearABTestCache();
     
     return new Response(JSON.stringify({ success: true }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
     });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), {
-      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    return new Response(JSON.stringify({ success: false, error: 'Internal error' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 }
@@ -401,7 +405,7 @@ export async function handleABTestResults(request, env, corsHeaders, testId) {
     const test = await env.DB.prepare('SELECT * FROM ab_tests WHERE id = ?').bind(testId).first();
     if (!test) {
       return new Response(JSON.stringify({ error: 'テストが見つかりません' }), {
-        status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
       });
     }
     
@@ -487,11 +491,11 @@ export async function handleABTestResults(request, env, corsHeaders, testId) {
         assignments: assignmentCount?.results || []
       }
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
     });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message }), {
-      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    return new Response(JSON.stringify({ success: false, error: 'Internal error' }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' }
     });
   }
 }

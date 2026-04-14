@@ -29,14 +29,31 @@ import {
   imageAnalysisFallback,
 } from './image-analyzer.mjs';
 
+import { withEtag } from './etag-helper.mjs';
+
+import { maskPII, hasPII } from './pii-masker.mjs';
+
+import { verifyAdminAuth, unauthorizedResponse } from './auth-helper.mjs';
+
+import { detectInputThreat } from './responseFilter.mjs';
+
+import { logInfo, logWarn, logError } from './logger.mjs';
+
+import { kvGet, kvSet, kvAvailable } from './kv-cache.mjs';
+
+import { handleEscalation } from './escalation.mjs';
+
 // ============================================
 // 1. FAQ データ（D1動的読み込み + フォールバック用ハードコード）
 // ============================================
 
-// --- D1キャッシュ（5分TTL） ---
-// テナント別FAQキャッシュ: { [tenantId]: { data, timestamp } }
-let faqCache = {};
-const FAQ_CACHE_TTL = 5 * 60 * 1000; // 5分
+// --- D1キャッシュ（5分TTL、KV-backed + isolate-local fallback） ---
+// 優先度: KV (env.STATE_KV) → isolate-local Map（KV未バインド時フォールバック）
+// KV有り: クロスアイソレート共有、KV未設定ランタイムでも動作継続
+let faqCache = {}; // isolate-local fallback store
+const FAQ_CACHE_TTL = 5 * 60 * 1000; // 5分 (ms)
+const FAQ_CACHE_TTL_SEC = 300; // KV TTL
+function faqKvKey(tenantId) { return `faq_cache:${tenantId}`; }
 
 /**
  * D1からFAQデータを動的に読み込む（5分間キャッシュ・テナント別）
@@ -50,7 +67,15 @@ async function getFAQData(env, tenantId = 'tenant_default') {
   const now = Date.now();
   const cacheKey = tenantId; // テナント別キャッシュキー
 
-  // テナント別キャッシュヒット
+  // 1) KVキャッシュヒット（クロスアイソレート共有）
+  if (kvAvailable(env)) {
+    const kvHit = await kvGet(env, faqKvKey(cacheKey));
+    if (kvHit && Array.isArray(kvHit.data) && (now - kvHit.timestamp) < FAQ_CACHE_TTL) {
+      return kvHit.data;
+    }
+  }
+
+  // 2) isolate-local キャッシュヒット（KV未設定時のフォールバック）
   if (faqCache[cacheKey] && (now - faqCache[cacheKey].timestamp) < FAQ_CACHE_TTL) {
     return faqCache[cacheKey].data;
   }
@@ -69,8 +94,13 @@ async function getFAQData(env, tenantId = 'tenant_default') {
       throw new Error('D1にFAQデータが存在しません');
     }
 
-    // テナント別キャッシュ更新
-    faqCache[cacheKey] = { data: results, timestamp: now };
+    // テナント別キャッシュ更新（KV + isolate-local）
+    const entry = { data: results, timestamp: now };
+    faqCache[cacheKey] = entry;
+    if (kvAvailable(env)) {
+      // fire-and-forget; errors are logged inside kvSet
+      await kvSet(env, faqKvKey(cacheKey), entry, { ttl: FAQ_CACHE_TTL_SEC });
+    }
     console.log(`[getFAQData] D1から${results.length}件のFAQを読み込み (tenant=${tenantId})`);
     return results;
 
@@ -123,13 +153,11 @@ const FALLBACK_FAQ_DATA = [
 
   // === ボーナス (8件) ===
   { id: 11, q: "ドリームポットとは何ですか？", a: "ドリームポットは、Sloten独自の業界初のジャックポットシステムです。最大賞金はなんと¥5,000,000！対象ゲームをプレイすることで自動的にエントリーされます。詳細な条件や対象ゲームについては、プロモーションページまたはチャットサポートまでお問い合わせください。" },
-  { id: 12, q: "ゾロ目チャレンジとは何ですか？", a: "ゾロ目チャレンジは、スロットゲームでボーナス購入を行い、配当金がゾロ目（例：¥1,111、¥22,222など）になった場合に特典がもらえるキャンペーンです。最大30%のキャッシュバックが適用されます。ボーナスコード「ゾロ目チャレンジ」をご利用ください。" },
-  { id: 13, q: "入金不要ボーナスはありますか？", a: "はい、Slotenでは入金不要ボーナスをご用意しております。新規登録のお客様には、入金なしでお楽しみいただけるボーナスをご提供しています。ウェルカムメニューの「入金不要ボーナス」からご確認いただけます。出金には賭け条件の達成が必要です。" },
-  { id: 14, q: "ボーナスコードはどこで入力しますか？", a: "ボーナスコードは、チャットサポートにてスタッフへ直接お伝えください。現在ご利用いただけるコードには「ゾロ目チャレンジ」「ホワイトデー」「WELCOME10」「FREEGIFT」「POINTS500」などがございます。" },
-  { id: 15, q: "WELCOME10のボーナスコードとは？", a: "WELCOME10は新規のお客様向けの10%割引ボーナスコードです。初回入金時にご利用いただくと、入金額の10%分がボーナスとして付与されます。チャットで「WELCOME10」とお伝えください。" },
-  { id: 16, q: "ボーナスの賭け条件とは何ですか？", a: "賭け条件とは、ボーナスで受け取った金額を出金するために必要なベット総額の条件です。例えば¥1,000のボーナスに20倍の賭け条件がある場合、¥20,000分のベットが必要です。各ボーナスにより条件が異なりますので、ご利用前にご確認ください。" },
-  { id: 17, q: "ホワイトデーキャンペーンとは？", a: "ホワイトデーキャンペーンは季節限定プロモーションです。ボーナスコード「ホワイトデー」をご利用いただくと、ティア別に¥500〜¥3,000のキャッシュボーナスが付与されます。期間限定ですのでお早めにご利用ください。" },
-  { id: 18, q: "現在利用できるボーナスコード一覧", a: "現在ご利用いただけるボーナスコード: ①「ゾロ目チャレンジ」最大30%CB ②「ホワイトデー」ティア別¥500〜¥3,000 ③「WELCOME10」新規10%割引 ④「FREEGIFT」先着100名ノベルティ ⑤「POINTS500」500ポイント。有効期限や条件はチャットでご確認ください。" },
+  // ボーナスコード値の記載を全て削除（AgentBot 側メニューに誘導）
+  { id: 12, q: "キャンペーンの参加方法は？", a: "スロ天では様々なキャンペーンを開催しております。参加をご希望の場合は、チャットメニューから「ボーナスコード入力」を選択してください。専用メニューでコードの選択と適用が行えます。キャンペーン内容の詳細はオペレーターまでお問い合わせください。" },
+  { id: 13, q: "入金不要ボーナスはありますか？", a: "はい、Slotenでは入金不要ボーナスをご用意しております。新規登録のお客様には、入金なしでお楽しみいただけるボーナスをご提供しています。チャットメニューの「入金不要ボーナス」からご確認いただけます。出金には賭け条件の達成が必要です。" },
+  { id: 14, q: "ボーナスコードはどこで入力しますか？", a: "ボーナスコードは、チャットメニューの「ボーナスコード入力」からご選択ください。有効なコードの一覧と適用はメニュー上で完結します。コードの値や詳細を AIチャットで直接お伝えすることはできません。ご不明点はオペレーターをお呼びください。" },
+  { id: 15, q: "ボーナスの賭け条件とは何ですか？", a: "賭け条件とは、ボーナスで受け取った金額を出金するために必要なベット総額の条件です。例えば¥1,000のボーナスに20倍の賭け条件がある場合、¥20,000分のベットが必要です。各ボーナスにより条件が異なりますので、ご利用前にご確認ください。" },
 
   // === アカウント (8件) ===
   { id: 19, q: "アカウントの登録方法を教えてください", a: "sloten.ioにアクセスし、新規登録ボタンからお手続きください。必要な情報をご入力いただくだけで、すぐにアカウントが作成されます。KYC（本人確認書類の提出）は不要ですので、面倒な書類提出なしですぐにゲームをお楽しみいただけます。" },
@@ -170,6 +198,47 @@ const FALLBACK_FAQ_DATA = [
   { id: 50, q: "問い合わせ方法を教えてください", a: "Slotenへのお問い合わせは、サイト右下のチャットアイコンからチャットサポートをご利用ください。AIアシスタントが基本的なご質問にお答えし、必要に応じて人間のオペレーターにお繋ぎいたします。" },
 ];
 
+/**
+ * Simple keyword-based FAQ retrieval (pre-LLM scoring).
+ * Not as good as vector search but avoids embedding costs.
+ * Replaces prompt stuffing of all FAQs with top-N relevant.
+ *
+ * TODO: future improvement — replace simple keyword retrieval with embedding-based similarity
+ * using Cloudflare Workers AI or external vector DB
+ */
+function selectRelevantFaqs(userMessage, faqData, topN = 5) {
+  if (!userMessage || !faqData || faqData.length === 0) return faqData ? faqData.slice(0, topN) : [];
+
+  const normalize = s => String(s || '').toLowerCase();
+  const userTokens = new Set(
+    normalize(userMessage)
+      .replace(/[、。！？・…「」『』（）〈〉《》【】〔〕〖〗\s]+/g, ' ')
+      .split(/\s+/)
+      .filter(t => t.length >= 2)
+  );
+
+  if (userTokens.size === 0) return faqData.slice(0, topN);
+
+  const scored = faqData.map(faq => {
+    const text = normalize(
+      (faq.question || faq.title || faq.q || '') + ' ' +
+      (faq.answer || faq.content || faq.a || '') + ' ' +
+      (Array.isArray(faq.keywords) ? faq.keywords.join(' ') : '')
+    );
+    let score = 0;
+    for (const t of userTokens) {
+      if (text.includes(t)) score += t.length;
+    }
+    return { faq, score };
+  });
+
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.filter(s => s.score > 0).slice(0, topN).map(s => s.faq);
+
+  if (top.length === 0) return faqData.slice(0, topN);
+  return top;
+}
+
 // --- FAQ → システムプロンプト埋め込み用テキスト生成 ---
 function buildFaqText(faqData) {
   return faqData.map(f => {
@@ -181,9 +250,11 @@ function buildFaqText(faqData) {
 
 // --- 完全版システムプロンプト（FAQ全文含む・動的対応） ---
 // @param {Array} faqData - getFAQData()の結果
-async function buildSystemPrompt(env, brand = null) {
+async function buildSystemPrompt(env, brand = null, userMessage = '') {
   const tenantId = brand?.tenant_id || 'tenant_default';
-  const faqData = await getFAQData(env, tenantId);
+  const allFaqData = await getFAQData(env, tenantId);
+  // Cost optimization: select top-N relevant FAQs instead of stuffing all
+  const faqData = selectRelevantFaqs(userMessage, allFaqData, 5);
   const brandName = brand?.name || 'スロット天国（Sloten）';
   const brandDomain = brand?.domain || 'sloten.io';
   const brandTone = brand?.tone || 'friendly';
@@ -291,9 +362,12 @@ async function callGemini(apiKey, systemPrompt, userMessage, conversationHistory
       parts: [{ text: userMessage }],
     });
 
-    const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const response = await fetch(GEMINI_API_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'x-goog-api-key': apiKey,
+      },
       body: JSON.stringify({
         system_instruction: {
           parts: [{ text: systemPrompt }],
@@ -306,10 +380,13 @@ async function callGemini(apiKey, systemPrompt, userMessage, conversationHistory
           maxOutputTokens: 512, // 200文字目安だが余裕を持たせる
         },
         safetySettings: [
-          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
-          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
-          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
-          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+          // TODO(C5): consider adding a lightweight LLM judge classifier for borderline
+          // prompt-injection inputs that pass regex but look suspicious. Skipped for now
+          // to keep the hot path synchronous and avoid extra API latency/cost.
         ],
       }),
       signal: controller.signal,
@@ -392,82 +469,145 @@ async function callWorkersAI(env, systemPrompt, userMessage, conversationHistory
 
 
 // ============================================
-// 4. サーキットブレーカー（簡易版・グローバル変数）
+// 4. サーキットブレーカー（KV-backed 分散フェイルオーバー）
 // ============================================
 //
 // 状態遷移:
-//   CLOSED ──(3回連続失敗)──> OPEN ──(30秒経過)──> HALF_OPEN ──(成功)──> CLOSED
+//   CLOSED ──(3回連続失敗)──> OPEN ──(60秒経過)──> HALF_OPEN ──(成功)──> CLOSED
 //                                                      └──(失敗)──> OPEN
 //
-// 注意: CF Workers isolate内のグローバル変数なのでベストエフォート。
-//       完全な永続化が必要な場合は D1 または KV を使用する。
+// 実装: env.STATE_KV に key `circuit_breaker:gemini` で状態保存（TTL 120s）。
+//       全 isolate で共有されるため、1 isolate で発生した障害が全体で反映される。
+//       KV未バインド時は isolate-local に degrade（以前の挙動相当）。
 
-const circuitBreaker = {
-  state: 'CLOSED',       // 'CLOSED' | 'OPEN' | 'HALF_OPEN'
-  failureCount: 0,       // 連続失敗回数
-  lastFailureTime: 0,    // 最後の失敗時刻（Unix ms）
-  threshold: 3,           // OPEN遷移閾値: 連続N回失敗
-  resetTimeout: 30000,    // OPEN→HALF_OPEN遷移待ち: 30秒
+const CB_KEY_PREFIX = 'circuit_breaker:';
+const CB_TTL_SEC = 120;
+const CB_THRESHOLD = 3;
+const CB_RESET_TIMEOUT_MS = 60 * 1000;
+
+// isolate-local fallback store when STATE_KV is unavailable (per model)
+const cbLocal = {
+  gemini: { state: 'CLOSED', failureCount: 0, lastFailureTime: 0 },
+  'workers-ai': { state: 'CLOSED', failureCount: 0, lastFailureTime: 0 },
 };
 
-/**
- * サーキットブレーカー: Geminiリクエスト可否判定
- * @returns {boolean} リクエスト可能ならtrue
- */
-function canRequestGemini() {
-  const now = Date.now();
+function defaultCircuitState() {
+  return { state: 'CLOSED', failureCount: 0, lastFailureTime: 0 };
+}
 
-  switch (circuitBreaker.state) {
+async function getCircuitState(env, modelKey = 'gemini') {
+  const key = CB_KEY_PREFIX + modelKey;
+  if (kvAvailable(env)) {
+    const s = await kvGet(env, key);
+    if (s && typeof s === 'object') return { ...defaultCircuitState(), ...s };
+    return defaultCircuitState();
+  }
+  return { ...(cbLocal[modelKey] || defaultCircuitState()) };
+}
+
+async function saveCircuitState(env, state, modelKey = 'gemini', ctx = null) {
+  const key = CB_KEY_PREFIX + modelKey;
+  cbLocal[modelKey] = { ...state };
+  if (kvAvailable(env)) {
+    const writePromise = kvSet(env, key, state, { ttl: CB_TTL_SEC });
+    if (ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(Promise.resolve(writePromise).catch((e) => console.error('saveCircuitState:', e.message)));
+    } else {
+      await writePromise;
+    }
+  }
+}
+
+/**
+ * サーキットブレーカー: モデル別リクエスト可否判定
+ * CLOSED / HALF_OPEN / (OPEN かつ経過 > resetTimeout) なら true
+ */
+async function canCallModel(env, modelKey = 'gemini', ctx = null) {
+  const now = Date.now();
+  const s = await getCircuitState(env, modelKey);
+
+  switch (s.state) {
     case 'CLOSED':
       return true;
-
     case 'OPEN':
-      // resetTimeout経過 → HALF_OPENに遷移して1リクエスト許可
-      if (now - circuitBreaker.lastFailureTime >= circuitBreaker.resetTimeout) {
-        circuitBreaker.state = 'HALF_OPEN';
-        console.log('[サーキットブレーカー] OPEN → HALF_OPEN（30秒経過）');
+      if (now - (s.lastFailureTime || 0) >= CB_RESET_TIMEOUT_MS) {
+        // OPEN → HALF_OPEN 遷移 → 1リクエスト許可
+        const next = { ...s, state: 'HALF_OPEN' };
+        await saveCircuitState(env, next, modelKey, ctx);
+        console.log(`[circuit-breaker:${modelKey}] OPEN → HALF_OPEN（resetTimeout経過）`);
         return true;
       }
       return false;
-
     case 'HALF_OPEN':
-      // HALF_OPENでは1リクエストだけ試行許可
       return true;
-
     default:
       return true;
   }
 }
 
-/**
- * サーキットブレーカー: 成功記録 → CLOSEDに遷移
- */
-function recordGeminiSuccess() {
-  if (circuitBreaker.state === 'HALF_OPEN') {
-    console.log('[サーキットブレーカー] HALF_OPEN → CLOSED（成功）');
-  }
-  circuitBreaker.failureCount = 0;
-  circuitBreaker.state = 'CLOSED';
+// Backward-compat wrapper
+async function canCallGemini(env, ctx = null) {
+  return canCallModel(env, 'gemini', ctx);
 }
 
 /**
- * サーキットブレーカー: 失敗記録 → 閾値超えでOPENに遷移
+ * 成功記録 → CLOSEDに遷移
  */
-function recordGeminiFailure() {
-  circuitBreaker.failureCount++;
-  circuitBreaker.lastFailureTime = Date.now();
+async function recordCircuitSuccess(env, modelKey = 'gemini', ctx = null) {
+  const s = await getCircuitState(env, modelKey);
+  if (s.state === 'HALF_OPEN') {
+    console.log(`[circuit-breaker:${modelKey}] HALF_OPEN → CLOSED（成功）`);
+  }
+  await saveCircuitState(env, { state: 'CLOSED', failureCount: 0, lastFailureTime: 0 }, modelKey, ctx);
+}
 
-  if (circuitBreaker.state === 'HALF_OPEN') {
+async function alertCircuitOpen(env, failureCount, modelKey = 'gemini') {
+  if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_ALERT_CHAT_ID) return;
+  const modelLabel = modelKey === 'workers-ai' ? 'Workers AI' : 'Gemini API';
+  try {
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({
+        chat_id: env.TELEGRAM_ALERT_CHAT_ID,
+        text: `⚠️ Sloten AI: Circuit breaker OPEN [${modelKey}]\n${modelLabel} has ${failureCount} consecutive failures.\nTime: ${new Date().toISOString()}`,
+      }),
+    });
+  } catch (_) { /* best effort */ }
+}
+
+// λ5: 全レイヤ共通の静的フォールバック文言（AgentBot worker-with-ai.js の AI_FALLBACK_MESSAGE と一致）
+const STATIC_FALLBACK = '申し訳ございません、ただいま混み合っております。少々お時間をおいてから再度お試しいただくか、「オペレーター」とお送りください。';
+
+/**
+ * 失敗記録 → 閾値超えでOPENに遷移
+ */
+async function recordCircuitFailure(env, modelKey = 'gemini', ctx = null) {
+  // ρ-Hπ5: KV has no CAS; reduce race window via re-read just before write,
+  // and use Math.max so concurrent increments don't lose updates.
+  const s = await getCircuitState(env, modelKey);
+  const sFresh = await getCircuitState(env, modelKey);
+  const baseCount = Math.max(s.failureCount || 0, sFresh.failureCount || 0);
+  const failureCount = baseCount + 1;
+  const lastFailureTime = Date.now();
+
+  if (s.state === 'HALF_OPEN') {
     // HALF_OPENでの失敗 → 即OPEN
-    circuitBreaker.state = 'OPEN';
-    console.log('[サーキットブレーカー] HALF_OPEN → OPEN（再失敗）');
+    await saveCircuitState(env, { state: 'OPEN', failureCount, lastFailureTime }, modelKey, ctx);
+    console.log(`[circuit-breaker:${modelKey}] HALF_OPEN → OPEN（再失敗）`);
+    await alertCircuitOpen(env, failureCount, modelKey);
     return;
   }
 
-  if (circuitBreaker.failureCount >= circuitBreaker.threshold) {
-    circuitBreaker.state = 'OPEN';
-    console.log(`[サーキットブレーカー] CLOSED → OPEN（${circuitBreaker.failureCount}回連続失敗）`);
+  if (failureCount >= CB_THRESHOLD) {
+    const wasOpen = s.state === 'OPEN';
+    await saveCircuitState(env, { state: 'OPEN', failureCount, lastFailureTime }, modelKey, ctx);
+    console.log(`[circuit-breaker:${modelKey}] CLOSED → OPEN（${failureCount}回連続失敗）`);
+    if (!wasOpen) await alertCircuitOpen(env, failureCount, modelKey);
+    return;
   }
+
+  await saveCircuitState(env, { state: s.state, failureCount, lastFailureTime }, modelKey, ctx);
 }
 
 
@@ -475,8 +615,39 @@ function recordGeminiFailure() {
 // 5. RG/エスカレーション検知
 // ============================================
 
-// --- RG（責任あるギャンブル）キーワード ---
-const RG_KEYWORDS = /依存|やめられない|止められない|借金|生活費|助けて|死にたい|自殺|つらい|辛い|苦しい|消えたい|逃げたい|もうダメ|人生終わ/;
+// --- RG（責任あるギャンブル）キーワード — 文脈アウェア ---
+// Core: 単独でも critical（自傷・依存症の明示表現）
+const RG_KEYWORDS_CORE = /死にたい|自殺|消えたい|依存症|ギャンブル依存/;
+// Soft: ギャンブル/金銭コンテキストと共起した場合のみ escalate
+const RG_KEYWORDS_SOFT = /借金|破産|生活費|全財産|助けて|つらい|辛い|苦しい|絶望|悲しい|やめられない|止められない|逃げたい|もうダメ|人生終わ/;
+const GAMBLING_CONTEXT = /ベット|賭け|ギャンブル|スロット|カジノ|勝て|負け|入金|出金|残高|失っ|負債|借り|カード|ローン/;
+const NEGATION = /(ない|ません|じゃない|ではない|しない)/;
+
+/**
+ * RG 懸念検知（誤検知防止のための文脈チェック付き）
+ * 例: 「辛いラーメン美味しい」→ null（soft kw ありだがgambling contextなし）
+ *     「ギャンブルで借金が辛い」→ { match: 'soft', priority: 'high' }
+ *     「死にたい」→ { match: 'core', priority: 'critical' }
+ * @param {string} text
+ * @returns {{match:string, priority:string}|null}
+ */
+function detectRGConcern(text) {
+  if (!text || typeof text !== 'string') return null;
+
+  // Core キーワードは単独で critical（否定文脈でも自傷表現は常に重大）
+  if (RG_KEYWORDS_CORE.test(text)) {
+    return { match: 'core', priority: 'critical' };
+  }
+
+  // Soft キーワードはギャンブル文脈と共起 + 末尾否定でないことが条件
+  if (RG_KEYWORDS_SOFT.test(text)) {
+    if (!GAMBLING_CONTEXT.test(text)) return null; // 非ギャンブル文脈（例: 辛いラーメン）
+    if (NEGATION.test(text.slice(-20))) return null; // 末尾で否定されている可能性
+    return { match: 'soft', priority: 'high' };
+  }
+
+  return null;
+}
 
 // --- エスカレーション（人間要求）キーワード ---
 const HUMAN_REQUEST_KEYWORDS = /オペレーター|人と話したい|担当者|人間に代わ|人間に繋|スタッフに|上司を呼|上の人|責任者/;
@@ -490,9 +661,10 @@ const ANGER_PATTERNS = /ふざけるな|ふざけんな|いい加減にし|許�
  * @returns {{escalate: boolean, reason?: string, priority?: string}}
  */
 function detectEscalation(message) {
-  // RGは最優先（priority: critical）
-  if (RG_KEYWORDS.test(message)) {
-    return { escalate: true, reason: 'rg_concern', priority: 'critical' };
+  // RGは最優先（文脈アウェア検知）
+  const rg = detectRGConcern(message);
+  if (rg) {
+    return { escalate: true, reason: 'rg_concern', priority: rg.priority };
   }
 
   // 人間要求
@@ -683,12 +855,24 @@ function filterOutput(response) {
  * @returns {Promise<boolean>}
  */
 async function isAIEnabled(env) {
+  // KV cache (60s TTL) to avoid D1 read per AI request
+  try {
+    if (env.STATE_KV) {
+      const cached = await env.STATE_KV.get('flag:ai_enabled');
+      if (cached !== null) return cached === 'true';
+    }
+  } catch (_) { /* KV miss → fall through to D1 */ }
+
   try {
     const row = await env.DB.prepare(
       "SELECT value FROM feature_flags WHERE key = 'ai_enabled' LIMIT 1"
     ).first();
-    if (!row) return false;
-    return row.value === 'true' || row.value === '1';
+    const enabled = !!row && (row.value === 'true' || row.value === '1');
+    // Write-through cache (best-effort)
+    if (env.STATE_KV) {
+      env.STATE_KV.put('flag:ai_enabled', enabled ? 'true' : 'false', { expirationTtl: 60 }).catch(() => {});
+    }
+    return enabled;
   } catch (e) {
     console.error('[isAIEnabled] D1読み込みエラー:', e.message);
     return false; // 安全側: AI無効
@@ -716,6 +900,18 @@ async function recordAIStats(env, { model, intent, escalated, responseTimeMs, in
   }
 }
 
+/**
+ * Non-blocking stats recording — uses ctx.waitUntil when available so the
+ * D1 write doesn't block the user response. Falls back to detached promise.
+ */
+function recordAIStatsAsync(ctx, env, payload) {
+  if (ctx && typeof ctx.waitUntil === 'function') {
+    ctx.waitUntil(recordAIStats(env, payload).catch((e) => console.error('recordAIStats:', e.message)));
+  } else {
+    recordAIStats(env, payload).catch(() => {});
+  }
+}
+
 
 // ============================================
 // AI呼び出しオーケストレーション
@@ -734,34 +930,43 @@ async function recordAIStats(env, { model, intent, escalated, responseTimeMs, in
  * @param {Array} conversationHistory - 会話履歴
  * @returns {Promise<{text: string, model: string, fallback: boolean}>}
  */
-async function callAIWithFallback(env, systemPrompt, userMessage, conversationHistory = []) {
+async function callAIWithFallback(env, systemPrompt, userMessage, conversationHistory = [], ctx = null) {
   // --- Phase 1: Gemini Flash ---
-  if (canRequestGemini() && env.GEMINI_API_KEY) {
+  const canCallGem = await canCallModel(env, 'gemini', ctx);
+  if (canCallGem && env.GEMINI_API_KEY) {
     try {
       const result = await callGemini(env.GEMINI_API_KEY, systemPrompt, userMessage, conversationHistory);
-      recordGeminiSuccess();
+      await recordCircuitSuccess(env, 'gemini', ctx);
       return { ...result, fallback: false };
     } catch (e) {
-      recordGeminiFailure();
+      await recordCircuitFailure(env, 'gemini', ctx);
       console.error('[callAIWithFallback] Gemini失敗:', e.message);
+      logError('gemini_error', { status: e.status || null, message: e.message });
     }
-  } else if (!canRequestGemini()) {
-    console.log('[callAIWithFallback] サーキットブレーカーOPEN → Geminiスキップ');
+  } else if (!canCallGem) {
+    console.log('[callAIWithFallback] Gemini サーキットブレーカーOPEN → スキップ');
   } else if (!env.GEMINI_API_KEY) {
     console.log('[callAIWithFallback] GEMINI_API_KEY未設定 → フォールバック');
   }
 
-  // --- Phase 2: Workers AI ---
-  try {
-    const result = await callWorkersAI(env, systemPrompt, userMessage, conversationHistory);
-    return { ...result, fallback: true };
-  } catch (e) {
-    console.error('[callAIWithFallback] Workers AIも失敗:', e.message);
+  // --- Phase 2: Workers AI (own circuit breaker) ---
+  const canCallWai = await canCallModel(env, 'workers-ai', ctx);
+  if (canCallWai) {
+    try {
+      const result = await callWorkersAI(env, systemPrompt, userMessage, conversationHistory);
+      await recordCircuitSuccess(env, 'workers-ai', ctx);
+      return { ...result, fallback: true };
+    } catch (e) {
+      await recordCircuitFailure(env, 'workers-ai', ctx);
+      console.error('[callAIWithFallback] Workers AIも失敗:', e.message);
+    }
+  } else {
+    console.log('[callAIWithFallback] Workers AI サーキットブレーカーOPEN → スキップ');
   }
 
-  // --- Phase 3: 定型メッセージ ---
+  // --- Phase 3: 定型メッセージ (λ5: AgentBot 側と統一) ---
   return {
-    text: '申し訳ございません。現在システムが混み合っております。しばらくお待ちいただくか、チャットにて「オペレーター」とお送りいただくと、スタッフが直接対応いたします。',
+    text: STATIC_FALLBACK,
     model: 'static-fallback',
     fallback: true,
   };
@@ -777,7 +982,7 @@ async function callAIWithFallback(env, systemPrompt, userMessage, conversationHi
  *
  * 処理フロー:
  *   Step 0: フィーチャーフラグ → OFF なら null（既存フローへ）
- *   Step 1: ボーナスコード照合（既存ロジック維持）
+ *   Step 1: [削除] ボーナスコード照合は AgentBot 側で完結させる（並列運用）
  *   Step 2: 入力サニタイズ（プロンプトインジェクション検知）
  *   Step 3: RG/エスカレーション検知
  *   Step 4: Gemini API呼び出し（サーキットブレーカー経由）
@@ -792,8 +997,9 @@ async function callAIWithFallback(env, systemPrompt, userMessage, conversationHi
  */
 export { clearFAQCache };
 
-export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
+export async function handleAIChatV2(request, env, corsHeaders, brand = null, ctx = null) {
   const startTime = Date.now();
+  const requestId = corsHeaders && corsHeaders['X-Request-ID'] ? corsHeaders['X-Request-ID'] : (request.headers.get('X-Request-ID') || (crypto.randomUUID ? crypto.randomUUID() : ''));
 
   // --- リクエストパース ---
   let body;
@@ -802,11 +1008,18 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
   } catch (e) {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
   const { message, conversation_id, user_id, conversation_history: conversationHistory = [], image: rawImage, image_mime_type } = body;
+
+  logInfo('ai_chat_received', {
+    request_id: requestId,
+    conversation_id,
+    message_length: typeof message === 'string' ? message.length : 0,
+    has_image: !!(rawImage && typeof rawImage === 'string' && rawImage.length > 100),
+  });
 
   // 画像のみ送信（テキストなし）も許可
   const hasImage = rawImage && typeof rawImage === 'string' && rawImage.length > 100;
@@ -815,7 +1028,7 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
   if (!hasMessage && !hasImage) {
     return new Response(JSON.stringify({ error: 'メッセージまたは画像が必要です' }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -831,55 +1044,12 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
   }
 
   // ============================================
-  // Step 1: ボーナスコード照合（既存ロジック維持）
+  // Step 1: ボーナスコード処理は削除（AgentBot が担当）
   // ============================================
-  try {
-    const bonusCode = await env.DB.prepare(
-      'SELECT * FROM bonus_codes WHERE code = ? AND is_active = 1'
-    ).bind(userMessage).first();
-
-    if (bonusCode) {
-      // 有効期限チェック
-      const now = new Date();
-      const isExpired = bonusCode.valid_until && new Date(bonusCode.valid_until) < now;
-      const isMaxed = bonusCode.max_uses > 0 && bonusCode.current_uses >= bonusCode.max_uses;
-
-      if (!isExpired && !isMaxed) {
-        // 使用回数をインクリメント
-        await env.DB.prepare(
-          'UPDATE bonus_codes SET current_uses = current_uses + 1 WHERE id = ?'
-        ).bind(bonusCode.id).run();
-
-        // カスタム応答メッセージがあればそれを返す
-        const responseMsg = bonusCode.response_message
-          ? bonusCode.response_message
-          : `✅ ボーナスコード「${userMessage}」を適用しました！\n種類: ${bonusCode.type}\n内容: ${bonusCode.value}`;
-
-        // 統計記録
-        await recordAIStats(env, {
-          model: 'direct-bonus',
-          intent: 'bonus_code',
-          escalated: false,
-          responseTimeMs: Date.now() - startTime,
-          inputLength: userMessage.length,
-          filtered: false,
-        });
-
-        return new Response(JSON.stringify({
-          reply: responseMsg,
-          sources: 0,
-          bonus_code_applied: true,
-          type: 'bonus_code',
-          model: 'direct',
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-    }
-  } catch (e) {
-    console.error('[handleAIChatV2] ボーナスコード照合エラー:', e.message);
-    // ボーナスコード照合失敗は無視してAI処理続行
-  }
+  // 並列運用: ボーナスコードの入力・検証・適用・GAS記録は AgentBot Worker で完結。
+  // AI Gateway は会話・FAQ応答のみを担当し、コード値を保持しない（プロンプトインジェクション対策）。
+  // ユーザーがコード入力をした場合はフリーテキストとして Gemini に回り、
+  // システムプロンプトの指示により「メニューからご利用ください」へ誘導される。
 
   // ============================================
   // Step 2: 入力サニタイズ
@@ -888,7 +1058,8 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
 
   // プロンプトインジェクション検知 → ブロック
   if (injectionDetected) {
-    await recordAIStats(env, {
+    logWarn('injection_blocked', { request_id: requestId, conversation_id, category: 'sanitize_injection' });
+    recordAIStatsAsync(ctx, env, {
       model: 'blocked',
       intent: 'prompt_injection',
       escalated: false,
@@ -898,12 +1069,39 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
     });
 
     return new Response(JSON.stringify({
-      reply: 'ご質問の意図を理解できませんでした。スロット天国のサービスについてお気軽にお尋ねください。',
+      reply: 'ご質問を正しく受け取れませんでした。お手数ですが別の表現でお試しいただくか、オペレーターへお繋ぎします。',
       type: 'blocked',
       model: 'security-filter',
+      quick_replies: [
+        { label: '別の表現で試す', value: 'rephrase' },
+        { label: 'オペレーターに繋ぐ', value: 'operator' },
+      ],
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
+  }
+
+  // H7: conversation_history entries injection check
+  // Any history entry flagged blocks the whole request (conservative approach)
+  for (let i = 0; i < conversationHistory.length; i++) {
+    const entry = conversationHistory[i];
+    if (!entry || typeof entry.content !== 'string') continue;
+    const threat = detectInputThreat(entry.content);
+    if (threat?.suspicious) {
+      console.warn('[injection] history entry', i, 'flagged:', threat.category);
+      logWarn('injection_blocked', { request_id: requestId, conversation_id, category: threat.category, source: 'history', index: i });
+      return new Response(JSON.stringify({
+        reply: 'ご質問を正しく受け取れませんでした。お手数ですが別の表現でお試しいただくか、オペレーターへお繋ぎします。',
+        type: 'blocked',
+        model: 'security-filter',
+        quick_replies: [
+          { label: '別の表現で試す', value: 'rephrase' },
+          { label: 'オペレーターに繋ぐ', value: 'operator' },
+        ],
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
+      });
+    }
   }
 
   // ============================================
@@ -943,8 +1141,24 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
       }
     }
 
+    // ξ-C2: Persist escalation to D1 escalation_queue so operators see it.
+    // Non-blocking via ctx.waitUntil — reply to user immediately.
+    const escalationSessionId = conversation_id || user_id || `session_${Date.now()}`;
+    const persistEscalation = handleEscalation(
+      env,
+      escalationSessionId,
+      escalationReason,
+      cleanMessage,
+      Array.isArray(conversationHistory) ? conversationHistory : []
+    ).catch((e) => {
+      console.error('[escalation] persist failed:', e?.message || e);
+    });
+    if (ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(persistEscalation);
+    }
+
     // 統計記録
-    await recordAIStats(env, {
+    recordAIStatsAsync(ctx, env, {
       model: 'escalation',
       intent: escalationReason,
       escalated: true,
@@ -962,7 +1176,7 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
       escalate: true,
       model: 'escalation-detection',
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -984,19 +1198,38 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
         model: 'validation',
       }), {
         status: 400,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
       });
     }
 
     // Gemini Vision API呼び出し
     try {
       const brandName = brand?.name || 'スロット天国（Sloten）';
+
+      // PII masking for text context around the image.
+      // The image binary itself cannot be masked — the vision system prompt
+      // instructs the model not to mention PII found in images.
+      let imgPiiMaskedCount = 0;
+      const maskedUserQuestion = maskPII(userMessage || '');
+      if (userMessage && maskedUserQuestion !== userMessage) imgPiiMaskedCount += 1;
+      const maskedConvHistory = Array.isArray(conversationHistory)
+        ? conversationHistory.map((msg) => {
+            if (!msg || typeof msg.content !== 'string') return msg;
+            const masked = maskPII(msg.content);
+            if (masked !== msg.content) imgPiiMaskedCount += 1;
+            return { ...msg, content: masked };
+          })
+        : conversationHistory;
+      if (imgPiiMaskedCount > 0) {
+        console.log(`[PII] masked ${imgPiiMaskedCount} items in message`);
+      }
+
       const imageResult = await analyzeImage(
         env,
         imageBase64,
         mimeType,
-        userMessage || null,
-        { brandName, conversationHistory }
+        maskedUserQuestion || null,
+        { brandName, conversationHistory: maskedConvHistory }
       );
 
       // 出力フィルタ適用
@@ -1007,7 +1240,7 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
       const imgResponseTimeMs = Date.now() - startTime;
 
       // 統計記録
-      await recordAIStats(env, {
+      recordAIStatsAsync(ctx, env, {
         model: imageResult.model,
         intent: 'image_analysis',
         escalated: false,
@@ -1027,7 +1260,7 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
         imageAnalyzed: true,
         responseTimeMs: imgResponseTimeMs,
       }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
       });
 
     } catch (imageError) {
@@ -1036,7 +1269,7 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
       // 画像分析失敗 → フォールバック応答
       const fallback = imageAnalysisFallback(imageError.message);
 
-      await recordAIStats(env, {
+      recordAIStatsAsync(ctx, env, {
         model: 'image-error',
         intent: 'image_analysis_failed',
         escalated: false,
@@ -1053,7 +1286,7 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
         imageAnalyzed: false,
         responseTimeMs: Date.now() - startTime,
       }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
       });
     }
   }
@@ -1067,14 +1300,15 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
   const isAngry = ANGER_PATTERNS.test(cleanMessage);
 
   // 多言語対応: 検知された言語に基づいてFAQ/プロンプトを切り替え
+  // Cost optimization: pass userMessage to enable top-N FAQ retrieval (ι1 fix)
   let systemPrompt;
-  const localizedCtx = await buildLocalizedContext(env, cleanMessage);
+  const localizedCtx = await buildLocalizedContext(env, cleanMessage, selectRelevantFaqs, brand);
   if (localizedCtx.systemPrompt) {
     systemPrompt = localizedCtx.systemPrompt;
-    console.log(`[handleAIChatV2] 多言語対応: lang=${localizedCtx.language}, FAQ=${localizedCtx.faqData?.length || 0}件`);
+    console.log(`[handleAIChatV2] 多言語対応: lang=${localizedCtx.language}, FAQ=${localizedCtx.faqData?.length || 0}件 (top-N retrieval)`);
   } else {
     // フォールバック: 既存の日本語プロンプト
-    systemPrompt = await buildSystemPrompt(env, brand);
+    systemPrompt = await buildSystemPrompt(env, brand, cleanMessage);
   }
 
   if (isAngry) {
@@ -1084,7 +1318,23 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
     systemPrompt += angryInstruction;
   }
 
-  const aiResult = await callAIWithFallback(env, systemPrompt, cleanMessage, conversationHistory);
+  // PII masking — applied to user inputs only, never to LLM outputs.
+  let piiMaskedCount = 0;
+  const maskedUserMessage = maskPII(cleanMessage);
+  if (maskedUserMessage !== cleanMessage) piiMaskedCount += 1;
+  const maskedHistory = Array.isArray(conversationHistory)
+    ? conversationHistory.map((msg) => {
+        if (!msg || typeof msg.content !== 'string') return msg;
+        const masked = maskPII(msg.content);
+        if (masked !== msg.content) piiMaskedCount += 1;
+        return { ...msg, content: masked };
+      })
+    : conversationHistory;
+  if (piiMaskedCount > 0) {
+    console.log(`[PII] masked ${piiMaskedCount} items in message`);
+  }
+
+  const aiResult = await callAIWithFallback(env, systemPrompt, maskedUserMessage, maskedHistory, ctx);
 
   // ============================================
   // Step 5: 出力フィルタ
@@ -1099,13 +1349,22 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
   const responseTimeMs = Date.now() - startTime;
 
   // 統計記録
-  await recordAIStats(env, {
+  recordAIStatsAsync(ctx, env, {
     model: aiResult.model,
     intent: isAngry ? 'angry_customer' : 'ai_response',
     escalated: false,
     responseTimeMs,
     inputLength: cleanMessage.length,
     filtered: wasFiltered,
+  });
+
+  logInfo('ai_chat_completed', {
+    request_id: requestId,
+    conversation_id,
+    model: aiResult.model,
+    fallback: aiResult.fallback,
+    filtered: wasFiltered,
+    response_time_ms: responseTimeMs,
   });
 
   return new Response(JSON.stringify({
@@ -1120,7 +1379,7 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
     responseTimeMs,
     ...(isAngry && { anger_detected: true }),
   }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
@@ -1135,15 +1394,17 @@ export async function handleAIChatV2(request, env, corsHeaders, brand = null) {
  */
 export async function handleAIStatus(request, env, corsHeaders) {
   const aiEnabled = await isAIEnabled(env);
+  const cb = await getCircuitState(env);
 
-  return new Response(JSON.stringify({
+  const body = JSON.stringify({
     ai_enabled: aiEnabled,
     circuit_breaker: {
-      state: circuitBreaker.state,
-      failure_count: circuitBreaker.failureCount,
-      last_failure: circuitBreaker.lastFailureTime
-        ? new Date(circuitBreaker.lastFailureTime).toISOString()
+      state: cb.state,
+      failure_count: cb.failureCount,
+      last_failure: cb.lastFailureTime
+        ? new Date(cb.lastFailureTime).toISOString()
         : null,
+      source: kvAvailable(env) ? 'kv' : 'isolate-local',
     },
     models: {
       primary: 'gemini-2.5-flash-lite',
@@ -1157,9 +1418,8 @@ export async function handleAIStatus(request, env, corsHeaders) {
       }])
     ),
     gemini_api_key_set: !!env.GEMINI_API_KEY,
-  }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
+  return await withEtag(request, body, 200, corsHeaders);
 }
 
 /**
@@ -1167,13 +1427,19 @@ export async function handleAIStatus(request, env, corsHeaders) {
  * リクエストボディ: { "enabled": true/false }
  */
 export async function handleAIToggle(request, env, corsHeaders) {
+  // C1: 認証必須
+  const auth = verifyAdminAuth(request, env);
+  if (!auth.ok) {
+    return unauthorizedResponse(auth, corsHeaders);
+  }
+
   let body;
   try {
     body = await request.json();
   } catch (e) {
     return new Response(JSON.stringify({ error: 'Invalid JSON' }), {
       status: 400,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 
@@ -1186,21 +1452,25 @@ export async function handleAIToggle(request, env, corsHeaders) {
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
     `).bind(enabled ? 'true' : 'false').run();
 
+    // Invalidate KV cache so next isAIEnabled() reads fresh value
+    if (env.STATE_KV) {
+      await env.STATE_KV.delete('flag:ai_enabled').catch(() => {});
+    }
+
     return new Response(JSON.stringify({
       success: true,
       ai_enabled: enabled,
       message: enabled ? 'AI応答を有効にしました' : 'AI応答を無効にしました',
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   } catch (e) {
     console.error('[handleAIToggle] D1エラー:', e.message);
     return new Response(JSON.stringify({
       error: 'フラグの更新に失敗しました',
-      detail: e.message,
     }), {
       status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 }
@@ -1209,7 +1479,14 @@ export async function handleAIToggle(request, env, corsHeaders) {
  * GET /api/ai/stats — 本日のAI統計サマリー
  */
 export async function handleAIStatsEndpoint(request, env, corsHeaders) {
+  // C1: 認証必須
+  const auth = verifyAdminAuth(request, env);
+  if (!auth.ok) {
+    return unauthorizedResponse(auth, corsHeaders);
+  }
+
   const today = new Date().toISOString().split('T')[0];
+  const cbStats = await getCircuitState(env);
 
   try {
     // 本日のサマリー
@@ -1250,21 +1527,21 @@ export async function handleAIStatsEndpoint(request, env, corsHeaders) {
       by_model: modelBreakdown || [],
       by_intent: intentBreakdown || [],
       circuit_breaker: {
-        state: circuitBreaker.state,
-        failure_count: circuitBreaker.failureCount,
+        state: cbStats.state,
+        failure_count: cbStats.failureCount,
       },
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   } catch (e) {
     console.error('[handleAIStatsEndpoint] D1エラー:', e.message);
     return new Response(JSON.stringify({
       date: today,
-      summary: { total_requests: 0, error: e.message },
+      summary: { total_requests: 0 },
       by_model: [],
       by_intent: [],
     }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
     });
   }
 }
@@ -1281,7 +1558,7 @@ export async function handleFAQCacheClear(request, env, corsHeaders) {
     success: true,
     message: 'FAQキャッシュをクリアしました。次回のAI応答時にD1から再読み込みされます。',
   }), {
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 

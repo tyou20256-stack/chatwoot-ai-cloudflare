@@ -34,7 +34,7 @@
 
 import { handleScheduled } from './scheduled.mjs';
 import { buildCorsHeaders, handleCorsPreflight } from './cors-helper.mjs';
-import { verifyAdminAuth, unauthorizedResponse, verifyAgentBotSecret, authenticate } from './auth-helper.mjs';
+import { verifyAdminAuth, unauthorizedResponse, verifyAgentBotSecret, authenticate, setPrincipal } from './auth-helper.mjs';
 import { handleStaffLogin, handleStaffLogout, handleStaffMe } from './handlers/staff-auth.mjs';
 import { checkRateLimit, getRateLimitKey, rateLimitResponse } from './rate-limiter.mjs';
 
@@ -176,6 +176,8 @@ function withAuth(handler, options = {}) {
         headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
       });
     }
+    // τ-Cτ1: store principal via WeakMap (Request is immutable in CF Workers)
+    setPrincipal(request, auth.principal);
     return handler(request, env, corsHeaders, ...args);
   };
 }
@@ -218,24 +220,6 @@ export default {
         }), { headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' } });
       }
 
-      // ---- One-time migration endpoint (remove after setup) ----
-      if (path === '/api/setup-production' && method === 'POST') {
-        try {
-          const db = env.DB;
-          const body = await request.json().catch(() => ({}));
-          const sql = body.sql || '';
-          if (!sql) return new Response(JSON.stringify({ error: 'sql field required' }), { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-          if (sql.trim().toUpperCase().startsWith('SELECT') || sql.trim().toUpperCase().startsWith('PRAGMA')) {
-            const result = await db.prepare(sql).all();
-            return new Response(JSON.stringify({ success: true, results: result.results }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-          }
-          await db.exec(sql);
-          return new Response(JSON.stringify({ success: true, message: 'Migration applied' }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        } catch (e) {
-          return new Response(JSON.stringify({ error: e.message }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
-        }
-      }
-
       // ---- Rate limiting (edge-level, before route matching) ----
       // 1) Global per-IP: 60 req/min on all /api/*
       if (path.startsWith('/api/')) {
@@ -250,7 +234,7 @@ export default {
 
         // 3) Admin mutations: 30 req/min on POST/PUT/DELETE /api/*
         if (method === 'POST' || method === 'PUT' || method === 'DELETE') {
-          const ip = request.headers.get('X-Real-IP') || request.headers.get('CF-Connecting-IP') || 'unknown';
+          const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
           const mutCheck = await checkRateLimit(env, `adminmut:${ip}`, 30, 60, ctx);
           if (!mutCheck.allowed) return rateLimitResponse(mutCheck, corsHeaders);
         }
@@ -258,7 +242,7 @@ export default {
 
       // ---- Staff Authentication (cookie-based) ----
       if (path === '/api/auth/login' && method === 'POST') {
-        const ip = request.headers.get('X-Real-IP') || request.headers.get('CF-Connecting-IP') || 'unknown';
+        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
         const loginCheck = await checkRateLimit(env, `login:${ip}`, 10, 600, ctx);
         if (!loginCheck.allowed) return rateLimitResponse(loginCheck, corsHeaders);
         return handleStaffLogin(request, env, corsHeaders);
@@ -280,7 +264,7 @@ export default {
         }
 
         // 2) AI chat specific: 50 req / 10 min per IP
-        const ip = request.headers.get('X-Real-IP') || request.headers.get('CF-Connecting-IP') || 'unknown';
+        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
         const aiCheck = await checkRateLimit(env, `aichat:${ip}`, 50, 600, ctx);
         if (!aiCheck.allowed) return rateLimitResponse(aiCheck, corsHeaders);
 

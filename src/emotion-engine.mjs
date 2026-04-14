@@ -1,3 +1,7 @@
+// TODO(kv-migration): EmotionTracker class holds per-isolate state.
+// Consider migrating to KV (see kv-cache.mjs) once async caller propagation
+// can be accommodated. Currently acceptable because emotion tracking is
+// per-user conversation and resets across isolates are benign (starts fresh).
 // ============================================
 // Sloten AI CS — 感情分析＋適応型トーンエンジン
 // emotion-engine.mjs
@@ -34,7 +38,7 @@ const EMOTION_DICTIONARY = {
     keywords: [
       // 高強度（weight: 1.0） — 明確な怒りの表明
       { pattern: /ふざけるな|ふざけんな/, weight: 1.0 },
-      { pattern: /最悪/, weight: 0.9 },
+      { pattern: /最悪/, weight: 0.6 }, // context-sensitive; can appear in "最悪の場合" (hypothetical)
       { pattern: /詐欺/, weight: 1.0 },
       { pattern: /嘘つき|嘘だ|嘘ばっか/, weight: 0.9 },
       { pattern: /イライラ/, weight: 0.8 },
@@ -65,7 +69,7 @@ const EMOTION_DICTIONARY = {
       { pattern: /また[?？!！]|また同じ/, weight: 0.7 },
       { pattern: /いつまで/, weight: 0.8 },
       { pattern: /まだ[?？]|まだですか/, weight: 0.7 },
-      { pattern: /全然/, weight: 0.6 },
+      { pattern: /全然/, weight: 0.2 }, // Common in 全然大丈夫 (it's totally fine), don't weight too high; needs co-occurrence
       { pattern: /うまくいかない/, weight: 0.7 },
       { pattern: /進まない/, weight: 0.6 },
       { pattern: /もう嫌|もういい/, weight: 0.8 },
@@ -116,7 +120,8 @@ const EMOTION_DICTIONARY = {
     keywords: [
       { pattern: /残念/, weight: 0.7 },
       { pattern: /がっかり/, weight: 0.8 },
-      { pattern: /つらい|辛い/, weight: 0.8 },
+      // 辛い removed: collides with 食べ物の「辛い」(spicy). つらい (hiragana) kept but downgraded.
+      { pattern: /つらい/, weight: 0.4 },
       { pattern: /悲しい/, weight: 0.8 },
       { pattern: /ショック/, weight: 0.7 },
       { pattern: /落ち込/, weight: 0.7 },
@@ -149,10 +154,27 @@ const EMOTION_DICTIONARY = {
  *   matches: マッチしたキーワード一覧（デバッグ/ログ用）
  *   secondary: 2番目に強い感情（nullable。複合感情の検知用）
  */
+/**
+ * 否定文脈をスコア前に除去（誤検知防止）
+ * 「辛くない」「悲しくない」「困ってない」などを取り除いてから感情辞書に通す
+ * @param {string} text
+ * @returns {string}
+ */
+function filterNegations(text) {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    .replace(/(\S+?)(くない)/g, '')            // 辛くない等のイ形容詞否定
+    .replace(/(\S+?)(じゃない|ではない)/g, '') // ～ではない
+    .replace(/(\S+?)(ない|ません|しない)/g, ''); // 一般否定（最後に処理）
+}
+
 export function analyzeEmotion(message) {
   if (!message || typeof message !== 'string') {
     return { emotion: 'neutral', score: 0, matches: [], secondary: null };
   }
+
+  // 否定表現を除去してから感情検知（False positive防止）
+  message = filterNegations(message);
 
   const scores = {};
   const matchDetails = {};

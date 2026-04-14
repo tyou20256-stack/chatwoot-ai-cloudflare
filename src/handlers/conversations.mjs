@@ -1,6 +1,7 @@
 // ⚠️ 弊社側暫定実装 — tking510 納品版で置き換え予定
 
 import { withEtag } from '../etag-helper.mjs';
+import { getPrincipal } from '../auth-helper.mjs';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json; charset=utf-8' };
 
@@ -155,10 +156,17 @@ export async function handleConversationReply(request, env, corsHeaders, convId)
     return json({ success: false, error: 'content required' }, 400, corsHeaders);
   }
   const sender_type = body.sender_type || 'agent';
-  // TODO: sender_id should come from IdP auth
+  // τ-Cτ1: derive from WeakMap-backed principal (Request is immutable in CF Workers)
+  const principalId = getPrincipal(request)?.staff_id ?? null;
   const senderIdFromHeader = request.headers.get('X-Staff-User-Id');
-  const sender_id = senderIdFromHeader ? parseInt(senderIdFromHeader, 10)
-    : (body.sender_id ? parseInt(body.sender_id, 10) : (console.warn('[sender_id] defaulted to 1 — TODO IdP'), 1));
+  const sender_id = principalId
+    ?? (senderIdFromHeader ? parseInt(senderIdFromHeader, 10) : (body.sender_id ? parseInt(body.sender_id, 10) : null));
+  if (!Number.isFinite(sender_id)) {
+    return json({ success: false, error: 'sender_id required' }, 400, corsHeaders);
+  }
+  // ρ-Hπ2: capture metadata so template_id, escalation_reason etc. are persisted
+  let metadata = body.metadata ?? null;
+  if (metadata && typeof metadata === 'object') metadata = JSON.stringify(metadata);
 
   try {
     const conv = await env.DB.prepare('SELECT id FROM conversations WHERE id = ?').bind(convId).first();
@@ -169,9 +177,9 @@ export async function handleConversationReply(request, env, corsHeaders, convId)
     // Atomic: insert message (+ optional close) in a single D1 batch
     const stmts = [
       env.DB.prepare(
-        `INSERT INTO messages (conversation_id, sender_id, sender_type, content)
-         VALUES (?, ?, ?, ?)`
-      ).bind(convId, sender_id, sender_type, content),
+        `INSERT INTO messages (conversation_id, sender_id, sender_type, content, metadata)
+         VALUES (?, ?, ?, ?, ?)`
+      ).bind(convId, sender_id, sender_type, content, metadata),
     ];
     if (auto_close === true) {
       stmts.push(env.DB.prepare(

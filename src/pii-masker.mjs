@@ -20,10 +20,14 @@ const EMAIL_RE = /[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 const PHONE_INTL_RE = /\+\d{1,3}[-\s]?\d{1,4}[-\s]?\d{3,4}[-\s]?\d{3,4}/g;
 const PHONE_MOBILE_JP_RE = /\b0[789]0[-\s]?\d{4}[-\s]?\d{4}\b/g;
 const PHONE_LANDLINE_JP_RE = /\b0\d{1,4}[-\s]?\d{1,4}[-\s]?\d{4}\b/g;
-// Korean mobile: 010/011/016/017/018/019 + 3-4 + 4
-const PHONE_KR_MOBILE_RE = /\b01[0-9][-\s]?\d{3,4}[-\s]?\d{4}\b/g;
-// Chinese mobile: 11 digits starting with 1[3-9]
-const PHONE_CN_MOBILE_RE = /\b1[3-9]\d{9}\b/g;
+// Korean mobile: standard "010-1234-5678" (with leading 0) or "+82" prefix.
+// τ-M: tightened — bare "10-1234-5678" (no leading 0, no +82) is too ambiguous
+// (matches order numbers / dates), so we require explicit Korean indicator.
+const PHONE_KR_MOBILE_RE = /(?:\+82[-\s]?|\b)0?1[0-9][-\s]?\d{3,4}[-\s]?\d{4}\b/g;
+// Chinese mobile: 11 digits starting with 1[3-9].
+// τ-M: keep contiguous-only OR explicit +86 prefix. Bare spaced "1XX XXXX XXXX"
+// over-matches Japanese phone book strings; require boundary or country code.
+const PHONE_CN_MOBILE_RE = /(?:\+86[-\s]?|\b)1[3-9]\d(?:\d{8}|[-\s]\d{4}[-\s]\d{4})\b/g;
 // Candidate card numbers: 13–19 digits with optional spaces/hyphens (multi-space tolerant)
 const CARD_CANDIDATE_RE = /(?:\d[\s-]*){13,19}/g;
 // Bank account with Japanese context label

@@ -110,6 +110,20 @@ export function unauthorizedResponse(check, corsHeaders) {
 // ⚠️ 弊社側暫定実装 — tking510 納品版で置き換え予定（または Cloudflare Access 移行）
 // ============================================================================
 
+// ρ-Hπ3: in-isolate request coalescing for D1 session lookups (cache stampede mitigation)
+const _sessionLookupInflight = new Map();
+
+// τ-Cτ1: WeakMap-based principal storage. Cloudflare Workers Request is immutable
+// (assignment to instance properties silently fails or throws). withAuth() stores
+// the authenticated principal here; handlers read it via getPrincipal(request).
+const _principalByRequest = new WeakMap();
+export function setPrincipal(request, principal) {
+  _principalByRequest.set(request, principal);
+}
+export function getPrincipal(request) {
+  return _principalByRequest.get(request) || null;
+}
+
 function hexToBytes(hex) {
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < hex.length; i += 2) out[i / 2] = parseInt(hex.slice(i, i + 2), 16);
@@ -256,7 +270,7 @@ export async function authenticate(request, env, options = {}) {
         try {
           const cached = await env.STATE_KV.get(cacheKey, 'json');
           if (cached
-            && cached.session_token_hash === tokenHash
+            && timingSafeEqual(cached.session_token_hash || '', tokenHash)
             && cached.is_active
             && (!cached.session_expires_at || new Date(cached.session_expires_at) > new Date())) {
             row = cached;
@@ -265,19 +279,27 @@ export async function authenticate(request, env, options = {}) {
       }
 
       if (!row) {
-        try {
-          row = await env.DB.prepare(
+        // ρ-Hπ3: coalesce concurrent lookups by staff_id within this isolate
+        const inflightKey = `staff:${payload.staff_id}`;
+        let pending = _sessionLookupInflight.get(inflightKey);
+        if (!pending) {
+          pending = env.DB.prepare(
             `SELECT session_token_hash, session_expires_at, is_active
              FROM staff_members WHERE id = ?`
           ).bind(payload.staff_id).first();
+          _sessionLookupInflight.set(inflightKey, pending);
+          // Auto-cleanup once resolved (success or failure)
+          pending.finally(() => _sessionLookupInflight.delete(inflightKey)).catch(() => {});
+        }
+        try {
+          row = await pending;
         } catch (e) {
           console.error('[authenticate] DB revocation check failed:', e.message);
-          // Fail secure: deny session if we can't verify revocation
           return { ok: false, status: 503, error: 'Authentication service unavailable' };
         }
 
         // Best-effort write-through cache (only when record looks valid)
-        if (row && row.is_active && row.session_token_hash === tokenHash && env.STATE_KV) {
+        if (row && row.is_active && timingSafeEqual(row.session_token_hash || '', tokenHash) && env.STATE_KV) {
           env.STATE_KV.put(cacheKey, JSON.stringify({
             session_token_hash: row.session_token_hash,
             session_expires_at: row.session_expires_at,
@@ -289,7 +311,7 @@ export async function authenticate(request, env, options = {}) {
       if (!row || !row.is_active) {
         return { ok: false, status: 401, error: 'Session invalid (account inactive)' };
       }
-      if (!row.session_token_hash || row.session_token_hash !== tokenHash) {
+      if (!row.session_token_hash || !timingSafeEqual(row.session_token_hash, tokenHash)) {
         return { ok: false, status: 401, error: 'Session revoked' };
       }
       if (row.session_expires_at && new Date(row.session_expires_at) < new Date()) {

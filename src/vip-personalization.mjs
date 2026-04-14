@@ -1,3 +1,7 @@
+// TODO(kv-migration): Module-level state (vipConfigCache, userVipCache) is
+// per-isolate. Consider migrating to KV (see kv-cache.mjs) once async caller
+// propagation can be accommodated. Currently acceptable because this cache
+// is per-tenant and 5-min TTL limits staleness exposure.
 // ============================================================
 // Sloten AI CS — VIPパーソナライゼーション モジュール
 // src/vip-personalization.mjs
@@ -265,7 +269,7 @@ export async function handleVIPConfigGet(request, env, corsHeaders) {
 
     return jsonResponse({ success: true, configs: results || [] }, corsHeaders);
   } catch (e) {
-    return jsonResponse({ success: false, error: e.message }, corsHeaders, 500);
+    return jsonResponse({ success: false, error: 'Internal error' }, corsHeaders, 500);
   }
 }
 
@@ -319,7 +323,7 @@ export async function handleVIPConfigPost(request, env, corsHeaders) {
 
     return jsonResponse({ success: true, message: 'VIP設定を保存しました' }, corsHeaders);
   } catch (e) {
-    return jsonResponse({ success: false, error: e.message }, corsHeaders, 500);
+    return jsonResponse({ success: false, error: 'Internal error' }, corsHeaders, 500);
   }
 }
 
@@ -334,7 +338,7 @@ export async function handleVIPUserGet(request, env, corsHeaders, username) {
     const vipContext = await getVIPContext(env, username, tenantId);
     return jsonResponse({ success: true, vip: vipContext }, corsHeaders);
   } catch (e) {
-    return jsonResponse({ success: false, error: e.message }, corsHeaders, 500);
+    return jsonResponse({ success: false, error: 'Internal error' }, corsHeaders, 500);
   }
 }
 
@@ -370,7 +374,7 @@ async function isVIPEnabled(env, tenantId) {
 function jsonResponse(data, corsHeaders, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 

@@ -1,3 +1,8 @@
+// TODO(kv-migration): Module-level state (triggersCache) is per-isolate.
+// Consider migrating to KV (see kv-cache.mjs) once async caller propagation
+// can be accommodated — current sync accessors would require an adapter layer.
+// Currently acceptable because this cache is per-tenant and 5-min TTL limits
+// staleness exposure.
 // ============================================================
 // Sloten AI CS — プロアクティブCS モジュール
 // src/proactive-cs.mjs
@@ -223,7 +228,7 @@ export async function handleProactiveTriggersGet(request, env, corsHeaders) {
 
     return jsonResponse({ success: true, triggers: parsed }, corsHeaders);
   } catch (e) {
-    return jsonResponse({ success: false, error: e.message }, corsHeaders, 500);
+    return jsonResponse({ success: false, error: 'Internal error' }, corsHeaders, 500);
   }
 }
 
@@ -275,7 +280,7 @@ export async function handleProactiveTriggersPost(request, env, corsHeaders) {
 
     return jsonResponse({ success: true, message: 'トリガーを保存しました' }, corsHeaders);
   } catch (e) {
-    return jsonResponse({ success: false, error: e.message }, corsHeaders, 500);
+    return jsonResponse({ success: false, error: 'Internal error' }, corsHeaders, 500);
   }
 }
 
@@ -288,7 +293,7 @@ export async function handleProactiveTriggersDelete(request, env, corsHeaders, t
     triggersCache = {}; // 全キャッシュクリア
     return jsonResponse({ success: true, message: '削除しました' }, corsHeaders);
   } catch (e) {
-    return jsonResponse({ success: false, error: e.message }, corsHeaders, 500);
+    return jsonResponse({ success: false, error: 'Internal error' }, corsHeaders, 500);
   }
 }
 
@@ -320,7 +325,7 @@ export async function handleProactiveLog(request, env, corsHeaders) {
     await logTriggerEvent(env, tenantId, trigger.id, sessionId, user, action, clickedReply, page);
     return jsonResponse({ success: true }, corsHeaders);
   } catch (e) {
-    return jsonResponse({ success: false, error: e.message }, corsHeaders, 500);
+    return jsonResponse({ success: false, error: 'Internal error' }, corsHeaders, 500);
   }
 }
 
@@ -346,7 +351,7 @@ function safeJsonParse(str, fallback) {
 function jsonResponse(data, corsHeaders, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+    headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
   });
 }
 
