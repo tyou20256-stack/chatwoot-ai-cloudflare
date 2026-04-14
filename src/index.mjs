@@ -255,19 +255,85 @@ export default {
       // ---- Public widget endpoints (no auth — read-only, CORS-open) ----
       if (path === '/api/public/jackpot' && method === 'GET') {
         try {
-          const row = await env.DB.prepare(
-            `SELECT value FROM feature_flags WHERE key = 'jackpot_amount'`
-          ).first();
-          const row2 = await env.DB.prepare(
-            `SELECT value FROM feature_flags WHERE key = 'jackpot_updated_at'`
-          ).first();
-          const amount = row?.value ? Number(row.value) : 5000000;
-          const updatedAt = row2?.value || null;
+          // Try live source first (sloten.io API), with KV cache (60s) and DB fallback
+          const SLOTEN_API = 'https://sloten.io/api/jackpot/campaign/current';
+          const CACHE_KEY = 'jackpot:current';
+          const CACHE_TTL = 60; // seconds
+
+          let amount = null;
+          let updatedAt = null;
+          let source = 'unknown';
+
+          // 1) Try short-TTL KV cache to avoid hammering sloten.io
+          if (env.STATE_KV) {
+            try {
+              const cached = await env.STATE_KV.get(CACHE_KEY, 'json');
+              if (cached && Number.isFinite(cached.amount) && cached.cached_at && (Date.now() - cached.cached_at) < CACHE_TTL * 1000) {
+                amount = cached.amount;
+                updatedAt = cached.updated_at;
+                source = 'kv-cache';
+              }
+            } catch (_) { /* fall through */ }
+          }
+
+          // 2) Fetch live from sloten.io
+          if (amount === null) {
+            try {
+              const r = await fetch(SLOTEN_API, {
+                headers: { 'Accept': 'application/json', 'User-Agent': 'sloten-widget/1.0' },
+                cf: { cacheTtl: 30 },
+              });
+              if (r.ok) {
+                const j = await r.json();
+                const live = Number(j?.currentCampaign?.poolAmount);
+                if (Number.isFinite(live) && live > 0) {
+                  amount = live;
+                  updatedAt = new Date().toISOString();
+                  source = 'sloten-live';
+                  // Write through both KV (short cache) and DB (durable fallback)
+                  if (env.STATE_KV) {
+                    env.STATE_KV.put(CACHE_KEY, JSON.stringify({ amount, updated_at: updatedAt, cached_at: Date.now() }), { expirationTtl: CACHE_TTL * 4 }).catch(() => {});
+                  }
+                  if (env.DB) {
+                    env.DB.batch([
+                      env.DB.prepare(`INSERT OR REPLACE INTO feature_flags (key, value, updated_at) VALUES ('jackpot_amount', ?, datetime('now'))`).bind(String(amount)),
+                      env.DB.prepare(`INSERT OR REPLACE INTO feature_flags (key, value, updated_at) VALUES ('jackpot_updated_at', ?, datetime('now'))`).bind(updatedAt),
+                    ]).catch(() => {});
+                  }
+                }
+              } else {
+                console.warn('[jackpot] sloten.io returned', r.status);
+              }
+            } catch (e) {
+              console.warn('[jackpot] sloten.io fetch failed:', e.message);
+            }
+          }
+
+          // 3) DB fallback (last known good)
+          if (amount === null && env.DB) {
+            try {
+              const row = await env.DB.prepare(`SELECT value FROM feature_flags WHERE key = 'jackpot_amount'`).first();
+              const row2 = await env.DB.prepare(`SELECT value FROM feature_flags WHERE key = 'jackpot_updated_at'`).first();
+              if (row?.value) {
+                amount = Number(row.value);
+                updatedAt = row2?.value || null;
+                source = 'db-fallback';
+              }
+            } catch (_) {}
+          }
+
+          // 4) Hard default
+          if (amount === null || !Number.isFinite(amount)) {
+            amount = 5000000;
+            source = 'default';
+          }
+
           return new Response(JSON.stringify({
-            amount: Number.isFinite(amount) ? amount : 5000000,
+            amount,
             currency: 'JPY',
             label: 'ドリームポット',
             updated_at: updatedAt,
+            source,
           }), {
             status: 200,
             headers: {
@@ -277,8 +343,8 @@ export default {
             },
           });
         } catch (e) {
-          console.error('[jackpot] fetch failed:', e.message);
-          return new Response(JSON.stringify({ amount: 5000000, currency: 'JPY', label: 'ドリームポット', updated_at: null }), {
+          console.error('[jackpot] handler failed:', e.message);
+          return new Response(JSON.stringify({ amount: 5000000, currency: 'JPY', label: 'ドリームポット', updated_at: null, source: 'error' }), {
             status: 200,
             headers: { ...corsHeaders, 'Content-Type': 'application/json; charset=utf-8' },
           });
