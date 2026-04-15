@@ -7,7 +7,7 @@
 //   - Only aggregated question patterns are stored (no individual customer data)
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const BASE = 'https://im.slot-h.com';
+const BASE = 'https://im.sloten.io';
 const ACCOUNT_ID = 3;
 const TOKEN = readFileSync('C:/tmp/cw_token.txt', 'utf8').trim();
 const MAX_CONVERSATIONS = parseInt(process.argv[2] || '1500', 10);

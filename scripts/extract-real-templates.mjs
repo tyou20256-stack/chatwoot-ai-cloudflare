@@ -8,7 +8,7 @@
 //   - PII masked before any logging or output (email/phone/account-id/amount)
 import { writeFileSync, readFileSync } from 'node:fs';
 
-const BASE = 'https://im.slot-h.com';
+const BASE = 'https://im.sloten.io';
 const ACCOUNT_ID = 3;
 const TOKEN = readFileSync('C:/tmp/cw_token.txt', 'utf8').trim();
 const MAX_CONVERSATIONS = parseInt(process.argv[2] || '300', 10);
@@ -138,7 +138,7 @@ function categorize(text) {
 // Generate SQL
 const lines = [];
 lines.push('-- @idempotent — seed-templates-real.sql');
-lines.push('-- Generated from REAL Chatwoot staff outgoing messages (im.slot-h.com / account 3).');
+lines.push('-- Generated from REAL Chatwoot staff outgoing messages (im.sloten.io / account 3).');
 lines.push(`-- Source: ${fetched} conversations scanned, ${allOutgoing.length} staff messages,`);
 lines.push(`-- ${candidates.length} frequent clusters identified, ${templates.length} representative templates emitted.`);
 lines.push('-- PII (email/phone/amount/account_id) masked before clustering.');

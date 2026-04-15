@@ -1,0 +1,10 @@
+{
+  "name": "sloten-admin-secure",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev public --compatibility-date=2024-03-01",
+    "deploy": "wrangler pages deploy public"
+  }
+}

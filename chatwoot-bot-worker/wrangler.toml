@@ -1,0 +1,50 @@
+name = "chatwoot-bot"
+main = "worker.js"
+compatibility_date = "2024-05-15"
+
+# KVネームスペース
+[[kv_namespaces]]
+binding = "CHATWOOT_KV"
+id = "c59c87bdf3334bb488e6ed8097c5e817"
+
+# Shadow mode ログ保存用 KV（AI_SHADOW_MODE=true 時に 30 日保持）
+# 未作成。有効化する場合は新規 KV namespace を作成して id を設定してください。
+# コード側は env.SHADOW_LOG 欠落時にスキップする guard を持つため、デプロイは可能。
+# [[kv_namespaces]]
+# binding = "SHADOW_LOG"
+# id = "REPLACE_WITH_SHADOW_LOG_KV_ID"
+
+# 環境変数（公開可能な値のみ）
+[vars]
+ENVIRONMENT = "production"
+ACCOUNT_ID = "3"
+CHATWOOT_BASE_URL = "https://im.sloten.io"
+
+# =============================================
+# 以下はデプロイ前に wrangler secret put で設定すること:
+#
+# 必須:
+#   wrangler secret put CHATWOOT_API_TOKEN
+#   wrangler secret put BONUS_CODE_WEBHOOK_URL
+#   wrangler secret put GAS_BOT_WEBHOOK_URL
+#   wrangler secret put BANK_TRANSFER_BOT_WEBHOOK_URL
+#   wrangler secret put EC_DEPOSIT_BOT_WEBHOOK_URL
+#
+# オプション（セキュリティ強化）:
+#   wrangler secret put WEBHOOK_SECRET    ← Webhook URL: /api/webhook/{この値}
+#   wrangler secret put ADMIN_TOKEN       ← 管理画面URL: /admin?token={この値}
+# =============================================
+
+# --- ステージング環境 ---
+[env.staging]
+name = "chatwoot-bot-staging"
+
+[[env.staging.kv_namespaces]]
+binding = "CHATWOOT_KV"
+id = "c59c87bdf3334bb488e6ed8097c5e817"
+preview_id = "c59c87bdf3334bb488e6ed8097c5e817"
+
+[env.staging.vars]
+ENVIRONMENT = "staging"
+ACCOUNT_ID = "3"
+CHATWOOT_BASE_URL = "https://im.sloten.io"

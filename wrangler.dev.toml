@@ -1,0 +1,47 @@
+# Phase τ ローカル smoke test 用設定（gitignore 対象、貴社環境にデプロイしないこと）
+name = "chatwoot-ai-gateway-local"
+main = "src/index.mjs"
+compatibility_date = "2024-03-01"
+workers_dev = false
+
+[ai]
+binding = "AI"
+
+[vars]
+DEPOSIT_PAGE_URL = "http://localhost:3000/deposit"
+PUBLIC_WORKER_URL = "http://localhost:8787"
+ENVIRONMENT = "development"
+# Smoke test では fail-open 許容（ローカル KV が flaky な場合あり）
+RATE_LIMIT_FAIL_OPEN = "true"
+# ローカル管理画面 / ChatUI からの CORS を許可
+ALLOWED_ORIGINS = "http://localhost:8788,http://127.0.0.1:8788,http://localhost:5500,http://127.0.0.1:5500"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "chatwoot_rag_db_local"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[[kv_namespaces]]
+binding = "RATE_LIMITER"
+id = "rate_limiter_local"
+
+[[kv_namespaces]]
+binding = "STATE_KV"
+id = "state_kv_local"
+
+[[kv_namespaces]]
+binding = "SHADOW_LOG"
+id = "shadow_log_local"
+
+# R2 はオプション。バインディングなしでも files.mjs はスタブ動作する
+# [[r2_buckets]]
+# binding = "FILES_R2"
+# bucket_name = "sloten-files-local"
+
+[build]
+command = ""
+
+[[rules]]
+type = "Text"
+globs = ["**/*.html"]
+fallthrough = false

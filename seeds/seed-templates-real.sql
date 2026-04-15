@@ -1,5 +1,5 @@
 -- @idempotent — seed-templates-real.sql
--- Generated from REAL Chatwoot staff outgoing messages (im.slot-h.com / account 3).
+-- Generated from REAL Chatwoot staff outgoing messages (im.sloten.io / account 3).
 -- Source: 2497 conversations scanned, 17540 staff messages,
 -- 80 frequent clusters identified, 69 representative templates emitted.
 -- PII (email/phone/amount/account_id) masked before clustering.

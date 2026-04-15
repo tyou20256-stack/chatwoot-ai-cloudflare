@@ -8,7 +8,7 @@ binding = "AI"
 
 [vars]
 DEPOSIT_PAGE_URL = "https://sloten.io/deposit"
-PUBLIC_WORKER_URL = "https://chatwoot-ai-gateway.koni-tanaka.workers.dev"
+PUBLIC_WORKER_URL = "REPLACE_WITH_YOUR_WORKER_PUBLIC_URL"
 
 # ============================================
 # Production (default / top-level)
@@ -16,21 +16,21 @@ PUBLIC_WORKER_URL = "https://chatwoot-ai-gateway.koni-tanaka.workers.dev"
 [[d1_databases]]
 binding = "DB"
 database_name = "chatwoot_rag_db"
-database_id = "fa4ab2dc-6180-4c5d-bb0d-45e3bc05cee0"
+database_id = "REPLACE_WITH_PROD_D1_ID"
 
 [[kv_namespaces]]
 binding = "RATE_LIMITER"
-id = "54d595365c154644a376ac0c83ebb561"
+id = "REPLACE_WITH_PROD_KV_ID"
 
 [[kv_namespaces]]
 binding = "STATE_KV"
-id = "2557f8891eff4340bcc4b812c78e4824"
+id = "REPLACE_WITH_PROD_STATE_KV_ID"
 
 # R2 bucket for uploaded files. If binding is absent, files handler
 # falls back to a metadata-only stub (r2_key = 'stub://not-implemented').
-# [[r2_buckets]]
-# binding = "FILES_R2"
-# bucket_name = "sloten-files"
+[[r2_buckets]]
+binding = "FILES_R2"
+bucket_name = "sloten-files"
 # preview_bucket_name = "sloten-files-preview"
 
 # ============================================
@@ -60,7 +60,7 @@ binding = "STATE_KV"
 id = "REPLACE_WITH_STAGING_STATE_KV_ID"
 
 [[env.staging.r2_buckets]]
-# binding = "FILES_R2"
+binding = "FILES_R2"
 bucket_name = "sloten-files-staging"
 
 # ============================================

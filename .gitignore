@@ -1,5 +1,11 @@
 node_modules/
 .wrangler/
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
+.dev.vars
+*.log
+# Secrets — never commit
+*.secret
+.admin-credentials-*.secret
+.admin-token-*.secret
+.agentbot-secret-*.secret
+# Internal-only configs (not for handover)
+wrangler.staging-bk.toml

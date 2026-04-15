@@ -1,0 +1,11 @@
+name = "sloten-admin-secure"
+compatibility_date = "2024-03-01"
+pages_build_output_dir = "public"
+
+# Pages Functions の環境変数は Cloudflare ダッシュボードまたは以下で設定:
+#   npx wrangler pages secret put ADMIN_API_TOKEN --project-name=sloten-admin-secure
+#
+# AI_GATEWAY_URL は公開情報でOKなので [vars]、ADMIN_API_TOKEN は secret 推奨。
+# 以下のプレースホルダを Worker の公開 URL に書き換えてからデプロイしてください。
+[vars]
+AI_GATEWAY_URL = "https://chatwoot-ai-gateway-staging-bk.rcc-aoki.workers.dev"
